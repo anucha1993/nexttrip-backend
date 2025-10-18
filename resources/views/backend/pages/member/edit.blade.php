@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+    <!-- BEGIN: Head -->
+    <head>
+        <!-- BEGIN: CSS Assets-->
+        @include("backend.layout.css")
+        <!-- END: CSS Assets-->
+    </head>
+    <!-- END: Head -->
+    <body class="py-5">
+        <!-- BEGIN: Mobile Menu -->
+        @include("backend.layout.mobile-menu")
+        <!-- END: Mobile Menu -->
+        <div class="flex">
+            <!-- BEGIN: Side Menu -->
+            @include("backend.layout.side-menu")
+            <!-- END: Side Menu -->
+
+            <div class="content">
+                <!-- BEGIN: Top Bar -->
+                @include("backend.layout.topbar")
+                <!-- END: Top Bar -->
+
+                <!-- BEGIN: Content -->
+                <div class="intro-y flex flex-col sm:flex-row items-center mt-8">
+                    <h2 class="text-lg font-medium mr-auto">
+                        ฟอร์มข้อมูล
+                    </h2>
+                </div>
+
+                <form id="menuForm" method="post" action="" onsubmit="return check_add();">
+                @csrf
+                    <div class="grid grid-cols-12 gap-6 mt-5">
+                        <div class="intro-y col-span-12 lg:col-span-6">
+                            <!-- BEGIN: Form Layout -->
+                            <div class="intro-y box p-5">
+
+                                <div class="grid grid-cols-12 gap-6 mt-5 mb-3">
+                                    <div class="col-span-6 lg:col-span-6">
+                                        <label for="crud-form-1" class="form-label">ชื่อ</label>
+                                        <input class="form-control" id="name" type="text" name="name" value="{{ @$row->name }}" placeholder="ชื่อ" autocomplete="off">
+                                    </div>
+                                    <div class="col-span-6 lg:col-span-6">
+                                        <label for="crud-form-1" class="form-label">นามสกุล</label>
+                                        <input class="form-control" id="surname" type="text" name="surname" value="{{ @$row->surname }}" placeholder="นามสกุล" autocomplete="off">
+                                    </div>
+                                </div>
+
+                                <div class="grid grid-cols-12 gap-6 mt-5 mb-3">
+                                    <div class="col-span-6 lg:col-span-6">
+                                        <label for="crud-form-1" class="form-label">เบอร์โทรศัพท์</label>
+                                        <input class="form-control" id="phone" type="text" name="phone" value="{{ @$row->phone }}" placeholder="เบอร์โทรศัพท์" autocomplete="off">
+                                    </div>
+                                    <div class="col-span-6 lg:col-span-6">
+                                        <label for="crud-form-1" class="form-label">อีเมล</label>
+                                        <input class="form-control" id="email" type="email" name="email" value="{{ @$row->email }}" placeholder="อีเมล" autocomplete="off">
+                                    </div>
+                                </div>
+                                @if(@$row->facebook_id == null && @$row->google_id == null  && @$row->line_id == null )
+                                <div class="grid grid-cols-12 gap-6 mt-5 mb-3">
+                                    <div class="col-span-12 lg:col-span-12">
+                                        <input type="checkbox" id="resetpassword" name="resetpassword"> เปลี่ยนรหัสผ่าน
+                                    </div>
+                                </div>
+
+                            
+                                <div class="grid grid-cols-12 gap-6 mt-5 mb-3">
+                                    <div class="col-span-6 lg:col-span-6">
+                                        <label for="crud-form-1" class="form-label">รหัสผ่าน</label>
+                                        <div class="input-group col-mb-6">
+                                            <input type="password" id="password" class="form-control" name="password" placeholder="รหัสผ่าน" autocomplete="off" disabled>
+                                            <div class="input-group-append">
+                                                <div class="input-group-text">
+                                                    <span class="card-link show_pass"><i class="far fa-eye" data-id="password"></i></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-span-6 lg:col-span-6">
+                                        <label for="crud-form-1" class="form-label">ยืนยันรหัสผ่าน</label>
+                                        <div class="input-group col-mb-6">
+                                            <input type="password" id="confirm_password" class="form-control" name="confirm_password" placeholder="ยืนยันรหัสผ่าน" autocomplete="off" disabled>
+                                            <div class="input-group-append">
+                                                <div class="input-group-text">
+                                                    <span class="card-link show_pass_confirm"><i class="far fa-eye" data-id="confirm_password"></i></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                @endif
+                            
+                                <div class="text-right mt-5">
+                                    <a class="btn btn-outline-secondary w-24 mr-1" href="{{url("$segment/$folder")}}">ยกเลิก</a>
+                                    <button type="submit" class="btn btn-primary w-24">บันทึกข้อมูล</button>
+                                </div>
+                            </div>
+                            <!-- END: Form Layout -->
+                        </div>
+                    </div>
+                </form>
+
+
+                
+
+            </div>
+            
+        </div>
+       
+        <!-- BEGIN: JS Assets-->
+        @include("backend.layout.script")
+
+        <script>
+      function check_add() {
+            var name = $('#name').val();
+            var surname = $('#surname').val();
+            var phone = $('#phone').val();
+            var email = $('#email').val();
+            var password = $('#password').val();
+            var confirm_password = $('#confirm_password').val();
+            var resetpassword = $('#resetpassword').val();
+
+            if (name == "" || surname == "" || phone == "" || email == "") {
+                toastr.error('กรุณากรอกข้อมูลให้ครบถ้วนก่อนบันทึกรายการ');
+                return false;
+            }
+
+            if (password != confirm_password) {
+                toastr.error('กรุณากรอกรหัสผ่านให้เหมือนกัน');
+                return false;
+            }
+        }
+
+        $('#resetpassword').change(function() {
+            if ($(this).prop("checked") == true) {
+                $('#password').attr('disabled', false);
+                $('#confirm_password').attr('disabled', false);
+            } else if ($(this).prop("checked") == false) {
+                $('#password').attr('disabled', true);
+                $('#confirm_password').attr('disabled', true);
+                $('#password').val(null);
+                $('#confirm_password').val(null);
+            }
+        });
+
+        $('.show_pass').click(function() {
+            var password = $('#password').attr('type');
+            if (password == "password") {
+                $('#password').attr('type', 'text');
+            } else {
+                $('#password').attr('type', 'password');
+            }
+        });
+
+
+        $('.show_pass_confirm').click(function() {
+            var confirm_password = $('#confirm_password').attr('type');
+            if (confirm_password == "password") {
+                $('#confirm_password').attr('type', 'text');
+            } else {
+                $('#confirm_password').attr('type', 'password');
+            }
+        });
+      
+        </script>
+        <!-- END: JS Assets-->
+    </body>
+</html>
