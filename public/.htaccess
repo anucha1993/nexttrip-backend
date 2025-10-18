@@ -1,0 +1,24 @@
+<IfModule mod_rewrite.c>
+  <IfModule mod_negotiation.c>
+    Options -MultiViews
+  </IfModule>
+
+  RewriteEngine On
+
+  # 2) บังคับ HTTPS สำหรับทุกเส้นทางที่เหลือ (ถ้ายังมาแบบ http)
+  RewriteCond %{HTTPS} !=on
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+  # 3) ตัด / ท้าย ถ้าไม่ใช่โฟลเดอร์จริง
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule ^(.*)/$ /$1 [L,R=301]
+
+  # 4) Front controller ของ Laravel
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteRule ^ index.php [L]
+
+  # 5) ส่งต่อ Authorization header
+  RewriteCond %{HTTP:Authorization} .
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+</IfModule>
