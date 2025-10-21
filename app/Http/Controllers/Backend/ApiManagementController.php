@@ -1236,52 +1236,17 @@ class ApiManagementController extends Controller
         }
 
         // ตรวจสอบว่ามีทัวร์นี้ในระบบแล้วหรือไม่ - ใช้ api_id เป็นมาตรฐานสำหรับทุก API
-        Log::info('Checking for existing tour by api_id', [
-            'provider' => $provider->code,
-            'api_id' => $apiId,
-            'tour_code' => $tourData['tour_code'] ?? 'N/A'
-        ]);
-        
         $existingTour = TourModel::where([
             'api_id' => $apiId,
             'api_type' => $provider->code
         ])->whereNull('deleted_at')->first();
         
-        if ($existingTour) {
-            Log::info('Found existing tour by api_id', [
-                'provider' => $provider->code,
-                'tour_id' => $existingTour->id,
-                'api_id' => $apiId
-            ]);
-        }
-        
         // For GO365, also check by tour_code to prevent duplicate constraint violations
         if (!$existingTour && $provider->code === 'go365' && isset($tourData['tour_code'])) {
-            Log::info('GO365: Checking for existing tour by tour_code', [
-                'provider' => $provider->code,
-                'tour_code' => $tourData['tour_code'],
-                'api_id' => $apiId
-            ]);
-            
             $existingTour = TourModel::where([
                 'code1' => $tourData['tour_code'],
                 'api_type' => $provider->code
             ])->whereNull('deleted_at')->first();
-            
-            if ($existingTour) {
-                Log::info('Found existing GO365 tour by tour_code', [
-                    'provider' => $provider->code,
-                    'tour_id' => $existingTour->id,
-                    'tour_code' => $tourData['tour_code'],
-                    'api_id' => $apiId
-                ]);
-            } else {
-                Log::info('No existing GO365 tour found by tour_code', [
-                    'provider' => $provider->code,
-                    'tour_code' => $tourData['tour_code'],
-                    'api_id' => $apiId
-                ]);
-            }
         }
 
         if ($existingTour) {
@@ -1370,13 +1335,6 @@ class ApiManagementController extends Controller
         } catch (\Illuminate\Database\QueryException $e) {
             // Handle duplicate constraint violations
             if ($e->getCode() == 23000 && strpos($e->getMessage(), 'Duplicate entry') !== false) {
-                Log::warning('Caught duplicate entry during save, treating as duplicate', [
-                    'provider' => $provider->code,
-                    'api_id' => $apiId,
-                    'tour_code' => $tourData['tour_code'] ?? 'N/A',
-                    'error' => $e->getMessage()
-                ]);
-                
                 // Try to find the existing tour again (might have been created by another process)
                 $existingTour = TourModel::where([
                     'code1' => $tourData['tour_code'] ?? '',
@@ -1387,12 +1345,6 @@ class ApiManagementController extends Controller
                 ])->whereNull('deleted_at')->first();
                 
                 if ($existingTour) {
-                    Log::info('Found existing tour after duplicate constraint violation', [
-                        'provider' => $provider->code,
-                        'tour_id' => $existingTour->id,
-                        'api_id' => $apiId
-                    ]);
-                    
                     // Log as duplicate
                     TourDuplicateModel::create([
                         'api_provider_id' => $provider->id,
