@@ -910,7 +910,20 @@ class ApiManagementController extends Controller
             throw new \Exception('Failed to get program IDs: ' . $response->status());
         }
         
-        $programIds = $response->json();
+        $responseData = $response->json();
+        
+        // Handle different API response structures
+        if ($provider->code === 'go365') {
+            // GO365 returns: {"success": true, "code": 200, "data": [tours], "total_rows": 337}
+            $programIds = $responseData['data'] ?? [];
+            if (!is_array($programIds)) {
+                throw new \Exception('GO365 API: Expected data array not found');
+            }
+        } else {
+            // TTN returns array directly
+            $programIds = $responseData;
+        }
+        
         Log::info('Multi-step sync: Found programs', [
             'provider' => $provider->name, 
             'count' => count($programIds)
@@ -1223,10 +1236,53 @@ class ApiManagementController extends Controller
         }
 
         // ตรวจสอบว่ามีทัวร์นี้ในระบบแล้วหรือไม่ - ใช้ api_id เป็นมาตรฐานสำหรับทุก API
+        Log::info('Checking for existing tour by api_id', [
+            'provider' => $provider->code,
+            'api_id' => $apiId,
+            'tour_code' => $tourData['tour_code'] ?? 'N/A'
+        ]);
+        
         $existingTour = TourModel::where([
             'api_id' => $apiId,
             'api_type' => $provider->code
         ])->whereNull('deleted_at')->first();
+        
+        if ($existingTour) {
+            Log::info('Found existing tour by api_id', [
+                'provider' => $provider->code,
+                'tour_id' => $existingTour->id,
+                'api_id' => $apiId
+            ]);
+        }
+        
+        // For GO365, also check by tour_code to prevent duplicate constraint violations
+        if (!$existingTour && $provider->code === 'go365' && isset($tourData['tour_code'])) {
+            Log::info('GO365: Checking for existing tour by tour_code', [
+                'provider' => $provider->code,
+                'tour_code' => $tourData['tour_code'],
+                'api_id' => $apiId
+            ]);
+            
+            $existingTour = TourModel::where([
+                'code1' => $tourData['tour_code'],
+                'api_type' => $provider->code
+            ])->whereNull('deleted_at')->first();
+            
+            if ($existingTour) {
+                Log::info('Found existing GO365 tour by tour_code', [
+                    'provider' => $provider->code,
+                    'tour_id' => $existingTour->id,
+                    'tour_code' => $tourData['tour_code'],
+                    'api_id' => $apiId
+                ]);
+            } else {
+                Log::info('No existing GO365 tour found by tour_code', [
+                    'provider' => $provider->code,
+                    'tour_code' => $tourData['tour_code'],
+                    'api_id' => $apiId
+                ]);
+            }
+        }
 
         if ($existingTour) {
             // ทัวร์มีอยู่แล้ว - อัปเดทข้อมูลแทนการสร้างใหม่
@@ -1309,7 +1365,51 @@ class ApiManagementController extends Controller
         // Process PDF if exists  
         $this->processPDF($provider, $tourData, $tourModel);
         
-        $tourModel->save();
+        try {
+            $tourModel->save();
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Handle duplicate constraint violations
+            if ($e->getCode() == 23000 && strpos($e->getMessage(), 'Duplicate entry') !== false) {
+                Log::warning('Caught duplicate entry during save, treating as duplicate', [
+                    'provider' => $provider->code,
+                    'api_id' => $apiId,
+                    'tour_code' => $tourData['tour_code'] ?? 'N/A',
+                    'error' => $e->getMessage()
+                ]);
+                
+                // Try to find the existing tour again (might have been created by another process)
+                $existingTour = TourModel::where([
+                    'code1' => $tourData['tour_code'] ?? '',
+                    'api_type' => $provider->code
+                ])->orWhere([
+                    'api_id' => $apiId,
+                    'api_type' => $provider->code
+                ])->whereNull('deleted_at')->first();
+                
+                if ($existingTour) {
+                    Log::info('Found existing tour after duplicate constraint violation', [
+                        'provider' => $provider->code,
+                        'tour_id' => $existingTour->id,
+                        'api_id' => $apiId
+                    ]);
+                    
+                    // Log as duplicate
+                    TourDuplicateModel::create([
+                        'api_provider_id' => $provider->id,
+                        'sync_log_id' => $syncLog->id,
+                        'api_id' => $apiId,
+                        'existing_tour_id' => $existingTour->id,
+                        'api_data' => $tourData,
+                        'status' => 'duplicate_constraint'
+                    ]);
+                    
+                    return ['action' => 'duplicated', 'tour_id' => $existingTour->id, 'tour_model' => $existingTour];
+                }
+            }
+            
+            // Re-throw if not a duplicate constraint violation or couldn't find existing tour
+            throw $e;
+        }
         
         // Process periods if exists
         $this->processPeriods($provider, $tourData, $tourModel);
@@ -1459,6 +1559,11 @@ class ApiManagementController extends Controller
         
         // Apply special logic for TTN APIs country_id and city_id
         $this->handleTTNCountryAndCity($provider, $tourData, $tourModel);
+        
+        // Apply TTN Japan specific logic (like original ApiController.php)
+        if ($provider->code === 'ttn' || $provider->code === 'ttn_japan') {
+            $this->applyTTNJapanSpecificLogic($provider, $tourData, $tourModel);
+        }
         
         // Apply conditions
         $this->applyConditions($provider, $tourData, $tourModel);
@@ -1893,7 +1998,18 @@ class ApiManagementController extends Controller
                 
                 // Only proceed if content length is valid (like original code)
                 if (!empty($contentLength) && intval($contentLength) > 0) {
+                    // TTN Japan has special URL structure - extract filename from query params
                     $filename = basename($imageUrl);
+                    if ($provider->code === 'ttn' || $provider->code === 'ttn_japan') {
+                        $urlParts = parse_url($imageUrl);
+                        if (isset($urlParts['query'])) {
+                            parse_str($urlParts['query'], $queryParams);
+                            $filePath = $queryParams['url'] ?? '';
+                            if ($filePath) {
+                                $filename = basename($filePath);
+                            }
+                        }
+                    }
                     
                     // Create directory if not exists  
                     $dirPath = 'upload/tour/' . $provider->code;
@@ -1901,8 +2017,8 @@ class ApiManagementController extends Controller
                         Storage::disk('public')->makeDirectory($dirPath, 0755, true);
                     }
                     
-                    // Use response body to avoid SSL issues with Image::make()
-                    $lg = Image::make($response->body());
+                    // Use original URL for Image::make (like original code)
+                    $lg = Image::make($imageUrl);
                     $ext = explode("/", $lg->mime());
                     $lg->resize(600, 600)->stream();
                     
@@ -3175,5 +3291,72 @@ class ApiManagementController extends Controller
                 'message' => 'Test schedule error: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Apply TTN Japan specific logic like original ApiController.php
+     * Handles country (JAPAN), city (P_LOCATION), airline (P_AIRLINE), and special settings
+     */
+    private function applyTTNJapanSpecificLogic($provider, $tourData, $tourModel)
+    {
+        // Force JAPAN as country (like original code)
+        if (!isset($tourModel->country_check_change) || $tourModel->country_check_change == null) {
+            $country = \App\Models\Backend\CountryModel::where('country_name_en', 'like', '%JAPAN%')
+                ->where('status', 'on')
+                ->whereNull('deleted_at')
+                ->first();
+                
+            if ($country) {
+                $tourModel->country_id = json_encode([(string)$country->id]);
+            } else {
+                $tourModel->country_id = '[]';
+            }
+        }
+        
+        // Handle city from P_LOCATION
+        if (isset($tourData['P_LOCATION']) && $tourData['P_LOCATION']) {
+            $city = \App\Models\Backend\CityModel::where('city_name_en', 'like', '%' . $tourData['P_LOCATION'] . '%')
+                ->where('status', 'on')
+                ->whereNull('deleted_at')
+                ->first();
+                
+            if ($city) {
+                $tourModel->city_id = json_encode([(string)$city->id]);
+            } else {
+                $tourModel->city_id = '[]';
+            }
+        }
+        
+        // Handle airline from P_AIRLINE code
+        if (!isset($tourModel->airline_check_change) || $tourModel->airline_check_change == null) {
+            if (isset($tourData['P_AIRLINE']) && $tourData['P_AIRLINE']) {
+                $airline = \App\Models\Backend\TravelTypeModel::where('code', $tourData['P_AIRLINE'])
+                    ->where('status', 'on')
+                    ->whereNull('deleted_at')
+                    ->first();
+                    
+                if ($airline) {
+                    $tourModel->airline_id = $airline->id;
+                }
+            }
+        }
+        
+        // Set special configuration values (like original code)
+        $tourModel->image_check_change = 2; // 1 ไม่ดึงรูปจาก Api , 2 ดึงรูปจาก Api
+        $tourModel->data_type = 2; // 1 system , 2 api
+        $tourModel->api_type = 'ttn';
+        
+        // wholesale_id and group_id are already set by config, but ensure they're correct
+        $tourModel->wholesale_id = 35; // TTN Japan specific
+        $tourModel->group_id = 3;
+        
+        Log::info('Applied TTN Japan specific logic', [
+            'tour_api_id' => $tourData['P_ID'] ?? 'unknown',
+            'country_id' => $tourModel->country_id,
+            'city_id' => $tourModel->city_id ?? null,
+            'airline_id' => $tourModel->airline_id ?? null,
+            'p_location' => $tourData['P_LOCATION'] ?? null,
+            'p_airline' => $tourData['P_AIRLINE'] ?? null
+        ]);
     }
 }
