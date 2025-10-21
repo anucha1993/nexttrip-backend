@@ -287,13 +287,12 @@ class TourController extends Controller
                 $data .= "<p><b>$row->code1</b></p><br>";
             }
             // ICON: แหล่งที่มา
-            if(isset($row->data_type)) {
-                if($row->data_type == 2) {
+            if(isset($row->api_id)) {
                     $data .= '<span title="ข้อมูลจาก API" style="color:#21f39c;font-size:16px;"> API -</span> ';
                 } else {
                     $data .= '<span title="ข้อมูลกรอกเอง" style="color:#b967fc;font-size:16px;"> Manual-</span> ';
                 }
-            }
+            
             $data .= "<a href='$this->segment/$this->folder/edit/$row->id' style='text-decoration: underline; color:#0283df;'>".$row->name."</a><br><br>";
             if($row->pdf_file || $row->word_file){
                 $data .= "เอกสารโปรแกรมทัวร์<br>";
