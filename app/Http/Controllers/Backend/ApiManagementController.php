@@ -356,8 +356,13 @@ class ApiManagementController extends Controller
                 }
                 
                 // Count periods based on provider configuration
-                if ($provider->requires_multi_step && $provider->tour_detail_endpoint && $recordCount > 0) {
-                    // For multi-step APIs like GO365, test detail endpoint for period counting
+                $config = is_string($provider->config) ? json_decode($provider->config, true) : ($provider->config ?? []);
+                $hasMultiStepConfig = $provider->requires_multi_step || 
+                                    !empty($provider->tour_detail_endpoint) ||
+                                    !empty($config['period_url_pattern']);
+                
+                if ($hasMultiStepConfig && $recordCount > 0) {
+                    // For multi-step APIs (GO365, TTN Japan), test detail/period endpoints for period counting
                     $periodCount = $this->testMultiStepPeriods($provider, $responseData, $headers);
                 } else {
                     // For single-step APIs, count periods directly from main response
@@ -434,7 +439,7 @@ class ApiManagementController extends Controller
                 $tours = is_array($responseData) ? $responseData : [];
             }
             
-            // Test detail endpoint for first few tours
+            // Test detail/period endpoint for first few tours
             $testLimit = min(3, count($tours)); // Test max 3 tours
             
             for ($i = 0; $i < $testLimit; $i++) {
@@ -445,27 +450,57 @@ class ApiManagementController extends Controller
                     if (!$tourId) continue;
                     
                     $detailUrl = str_replace('{tour_id}', $tourId, $provider->tour_detail_endpoint);
-                } else {
-                    // For other multi-step APIs
-                    $tourId = $tour['P_ID'] ?? $tour['id'] ?? null;
-                    if (!$tourId) continue;
                     
-                    $detailUrl = str_replace('{id}', $tourId, $provider->tour_detail_endpoint);
-                }
-                
-                $detailResponse = Http::withHeaders($headers)->timeout(10)->get($detailUrl);
-                
-                if ($detailResponse->successful()) {
-                    $detailData = $detailResponse->json();
+                    $detailResponse = Http::withHeaders($headers)->timeout(10)->get($detailUrl);
                     
-                    // Count periods based on provider structure
-                    if ($provider->code === 'go365') {
+                    if ($detailResponse->successful()) {
+                        $detailData = $detailResponse->json();
+                        
                         if (isset($detailData['data'][0]['tour_period']) && is_array($detailData['data'][0]['tour_period'])) {
                             $periodCount += count($detailData['data'][0]['tour_period']);
                         }
+                    }
+                } else {
+                    // For TTN Japan and other multi-step APIs
+                    $tourId = null;
+                    if (is_array($tour)) {
+                        $tourId = $tour['P_ID'] ?? $tour['id'] ?? null;
+                    } elseif (is_numeric($tour)) {
+                        $tourId = $tour;
+                    }
+                    if (!$tourId) continue;
+                    
+                    // Check if provider has period_url_pattern in config
+                    $config = is_string($provider->config) ? json_decode($provider->config, true) : ($provider->config ?? []);
+                    
+                    if (!empty($config['period_url_pattern'])) {
+                        // TTN Japan: Use period endpoint directly
+                        $periodUrl = str_replace('{id}', $tourId, $config['period_url_pattern']);
+                        $periodResponse = Http::withHeaders($headers)->timeout(10)->get($periodUrl);
+                        
+                        if ($periodResponse->successful()) {
+                            $periodData = $periodResponse->json();
+                            
+                            if (is_array($periodData)) {
+                                // TTN Japan structure: array of period groups, each with Price array
+                                foreach ($periodData as $periodGroup) {
+                                    if (isset($periodGroup['Price']) && is_array($periodGroup['Price'])) {
+                                        $periodCount += count($periodGroup['Price']);
+                                    }
+                                }
+                            }
+                        }
                     } else {
-                        // Handle other provider structures
-                        $periodCount += $this->countPeriodsFromResponse($detailData, $provider);
+                        // Fallback to detail endpoint for other providers
+                        $detailUrl = str_replace('{id}', $tourId, $provider->tour_detail_endpoint ?? '');
+                        if (!$detailUrl) continue;
+                        
+                        $detailResponse = Http::withHeaders($headers)->timeout(10)->get($detailUrl);
+                        
+                        if ($detailResponse->successful()) {
+                            $detailData = $detailResponse->json();
+                            $periodCount += $this->countPeriodsFromResponse($detailData, $provider);
+                        }
                     }
                 }
             }
@@ -909,8 +944,22 @@ class ApiManagementController extends Controller
                     $detailUrl = str_replace('{tour_id}', $tourId, $provider->tour_detail_endpoint);
                 } else {
                     // TTN structure: use P_ID with config pattern
-                    $programId = $programData['P_ID'] ?? $programData;
-                    $detailUrl = str_replace('{id}', $programId, $config['detail_url_pattern']);
+                    $programId = is_array($programData) ? ($programData['P_ID'] ?? null) : $programData;
+                    if (!$programId) {
+                        $errorCount++;
+                        Log::error('No program ID found', ['program_data' => $programData]);
+                        continue;
+                    }
+                    
+                    $detailUrlPattern = $config['detail_url_pattern'] ?? '';
+                    
+                    // Build full URL if pattern doesn't start with http
+                    if (!str_starts_with($detailUrlPattern, 'http')) {
+                        $baseUrl = rtrim($provider->url, '/');
+                        $detailUrlPattern = $baseUrl . '/' . ltrim($detailUrlPattern, '/');
+                    }
+                    
+                    $detailUrl = str_replace('{id}', $programId, $detailUrlPattern);
                 }
                 
                 $response = Http::withHeaders($headers)->timeout(60)->get($detailUrl);
@@ -970,7 +1019,7 @@ class ApiManagementController extends Controller
                 $errors[] = $e->getMessage();
                 Log::error('Error processing program', [
                     'provider' => $provider->name,
-                    'program_id' => $programId['P_ID'],
+                    'program_id' => is_array($programData) ? ($programData['P_ID'] ?? 'unknown') : $programData,
                     'error' => $e->getMessage()
                 ]);
             }
@@ -1010,7 +1059,16 @@ class ApiManagementController extends Controller
         try {
             $headers = $provider->headers ?? [];
             $config = $provider->config ?? [];
-            $periodUrl = str_replace('{id}', $programId, $config['period_url_pattern']);
+            
+            $periodUrlPattern = $config['period_url_pattern'] ?? '';
+            
+            // Build full URL if pattern doesn't start with http
+            if (!str_starts_with($periodUrlPattern, 'http')) {
+                $baseUrl = rtrim($provider->url, '/');
+                $periodUrlPattern = $baseUrl . '/' . ltrim($periodUrlPattern, '/');
+            }
+            
+            $periodUrl = str_replace('{id}', $programId, $periodUrlPattern);
             
             $response = Http::withHeaders($headers)->timeout(60)->get($periodUrl);
             
