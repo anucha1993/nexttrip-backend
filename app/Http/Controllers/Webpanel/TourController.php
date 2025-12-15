@@ -242,6 +242,7 @@ class TourController extends Controller
                 if (@$like['search_tag_promotion'] != "") {
                     $query->where('tb_tour_period.promotion_id', $like['search_tag_promotion'] );
                 }
+                
                 // if (@$like['search_city'] != "") {
                 //     if (@$like['search_city'] != "") {
                 //         $arr = array();
@@ -255,6 +256,7 @@ class TourController extends Controller
                 //         $query->where('province_id', 'like', '%"' . $arr['PRO'][0] . '"%');
                 //     }
                 // }
+
                 if (@$like['search_type'] != "") {
                     $query->where('tb_tour.type_id', $like['search_type'] );
                 }
@@ -382,6 +384,7 @@ class TourController extends Controller
         })
         ->editColumn('status', function ($row) {
             $status = "";
+
             if($row->status == "on")
             {
                 $status = "checked";
@@ -391,12 +394,14 @@ class TourController extends Controller
                     </div>";
             return $data;
         })
+
         ->editColumn('tab_status', function ($row) {
             $tab_status = "";
             if($row->tab_status == "on")
             {
                 $tab_status = "checked";
             }
+
             $data = "<div class='form-check form-switch w-full sm:w-auto sm:ml-auto mt-3 sm:mt-0'>
                         <input id='tab_status_change_$row->id' data-id='$row->id' onclick='tab_status($row->id);' class='show-code form-check-input mr-0 ml-3' type='checkbox' $tab_status>
                     </div>";

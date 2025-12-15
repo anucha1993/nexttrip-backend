@@ -1,10 +1,10 @@
 <?php
 
 /**
- * GO365 API Sync Script
- * ทดสอบ sync GO365 API 1 record
+ * TTN Japan API Sync Script
+ * ทดสอบ sync TTN Japan API 1 record
  * 
- * Usage: php run_go365_sync.php
+ * Usage: php run_ttn_sync.php
  */
 
 require __DIR__.'/vendor/autoload.php';
@@ -17,15 +17,15 @@ $kernel->bootstrap();
 use App\Http\Controllers\Backend\ApiManagementController;
 use App\Models\Backend\ApiProviderModel;
 
-echo "=== GO365 API Sync Test ===\n";
+echo "=== TTN Japan API Sync Test ===\n";
 echo "Starting sync...\n\n";
 
 try {
-    // หา GO365 API Provider
-    $provider = ApiProviderModel::where('code', 'go365')->first();
+    // หา TTN Japan API Provider
+    $provider = ApiProviderModel::where('code', 'ttn_japan')->first();
     
     if (!$provider) {
-        echo "❌ Error: GO365 API provider not found!\n";
+        echo "❌ Error: TTN Japan API provider not found!\n";
         exit(1);
     }
     

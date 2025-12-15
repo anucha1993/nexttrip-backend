@@ -165,6 +165,9 @@ class ApiManagementController extends Controller
             'description' => 'nullable|string',
             'headers' => 'nullable|array',
             'config' => 'nullable|array',
+            'pdf_header' => 'nullable|image|mimes:png,jpg,jpeg|max:2048',
+            'pdf_footer' => 'nullable|image|mimes:png,jpg,jpeg|max:2048',
+            'pdf_header_footer_enabled' => 'nullable|string|in:on,off',
         ]);
 
         DB::beginTransaction();
@@ -186,6 +189,46 @@ class ApiManagementController extends Controller
             }
             logger('Final headers array: ' . json_encode($headers));
             
+            // Handle PDF Header file upload
+            $pdfHeaderPath = $provider->pdf_header;
+            if ($request->hasFile('pdf_header')) {
+                // Delete old file if exists
+                if ($provider->pdf_header && file_exists(public_path($provider->pdf_header))) {
+                    unlink(public_path($provider->pdf_header));
+                }
+                
+                $file = $request->file('pdf_header');
+                $filename = 'pdf_header_' . $provider->code . '_' . time() . '.' . $file->getClientOriginalExtension();
+                $file->move(public_path('upload/pdf_headers'), $filename);
+                $pdfHeaderPath = 'upload/pdf_headers/' . $filename;
+            } elseif ($request->input('remove_pdf_header') == '1' && $provider->pdf_header) {
+                // Remove header if requested
+                if (file_exists(public_path($provider->pdf_header))) {
+                    unlink(public_path($provider->pdf_header));
+                }
+                $pdfHeaderPath = null;
+            }
+            
+            // Handle PDF Footer file upload
+            $pdfFooterPath = $provider->pdf_footer;
+            if ($request->hasFile('pdf_footer')) {
+                // Delete old file if exists
+                if ($provider->pdf_footer && file_exists(public_path($provider->pdf_footer))) {
+                    unlink(public_path($provider->pdf_footer));
+                }
+                
+                $file = $request->file('pdf_footer');
+                $filename = 'pdf_footer_' . $provider->code . '_' . time() . '.' . $file->getClientOriginalExtension();
+                $file->move(public_path('upload/pdf_footers'), $filename);
+                $pdfFooterPath = 'upload/pdf_footers/' . $filename;
+            } elseif ($request->input('remove_pdf_footer') == '1' && $provider->pdf_footer) {
+                // Remove footer if requested
+                if (file_exists(public_path($provider->pdf_footer))) {
+                    unlink(public_path($provider->pdf_footer));
+                }
+                $pdfFooterPath = null;
+            }
+            
             $updateResult = $provider->update([
                 'name' => $request->name,
                 'code' => $request->code,
@@ -197,7 +240,10 @@ class ApiManagementController extends Controller
                 'headers' => $headers,
                 'config' => $request->config ?? [],
                 'description' => $request->description,
-                'status' => $request->status ?? 'active'
+                'status' => $request->status ?? 'active',
+                'pdf_header' => $pdfHeaderPath,
+                'pdf_footer' => $pdfFooterPath,
+                'pdf_header_footer_enabled' => $request->input('pdf_header_footer_enabled', 'off'),
             ]);
             
             logger('Update result: ' . ($updateResult ? 'success' : 'failed'));
@@ -1257,9 +1303,15 @@ class ApiManagementController extends Controller
                 'api_id' => $apiId
             ]);
             
-            // Update existing tour with new data from API
+            // Update existing tour with new data from API (with check_change fields)
             try {
-                $this->mapTourFieldsFromConfig($provider, $tourData, $existingTour);
+                // เช็ค check_change fields ก่อน map (เหมือน headcode เดิม)
+                $this->mapTourFieldsFromConfig($provider, $tourData, $existingTour, true); // true = is updating
+                
+                // สำหรับ TTN Japan - เพิ่ม city_id logic
+                if ($provider->code === 'ttn' && isset($tourData['P_LOCATION'])) {
+                    $this->applyTTNJapanCityLogic($tourData, $existingTour, true);
+                }
             } catch (\Exception $e) {
                 Log::error('Error updating tour fields', [
                     'provider' => $provider->code,
@@ -1269,8 +1321,8 @@ class ApiManagementController extends Controller
                 throw $e;
             }
             
-            // Process image and PDF updates
-            $this->processImage($provider, $tourData, $existingTour);
+            // Process image and PDF updates (with check_change)
+            $this->processImage($provider, $tourData, $existingTour, true); // true = is updating
             $this->processPDF($provider, $tourData, $existingTour);
             
             $existingTour->save();
@@ -1310,9 +1362,21 @@ class ApiManagementController extends Controller
         $tourModel->code = $tourCode;
         $tourModel->api_id = $apiId;  // ใช้ api_id เป็นมาตรฐานสำหรับทุก API
         
+        // จัดการ wholesale_id ให้เฉพาะแต่ละ API (เหมือน headcode เดิม)
+        $tourModel->group_id = 3; // Wholesale group
+        if ($provider->code === 'ttn') {
+            $tourModel->wholesale_id = 35; // TTN Japan
+        } elseif ($provider->code === 'go365') {
+            $tourModel->wholesale_id = 41; // GO365
+        } elseif ($provider->code === 'zego') {
+            $tourModel->wholesale_id = null; // Zego ไม่มี wholesale_id ตาย headcode
+        } elseif ($provider->code === 'best') {
+            $tourModel->wholesale_id = null; // Best ไม่มี wholesale_id ตาม headcode
+        }
+        
         // Map fields จาก API data using database mappings (including static values like api_type, data_type)
         try {
-            $this->mapTourFieldsFromConfig($provider, $tourData, $tourModel);
+            $this->mapTourFieldsFromConfig($provider, $tourData, $tourModel, false); // false = is new
         } catch (\Exception $e) {
             Log::error('Error in mapTourFieldsFromConfig', [
                 'provider' => $provider->code,
@@ -1324,8 +1388,16 @@ class ApiManagementController extends Controller
             throw $e;
         }
         
+        // สำหรับ TTN Japan - เพิ่ม city_id logic (เหมือน headcode เดิม)
+        if ($provider->code === 'ttn' && isset($tourData['P_LOCATION'])) {
+            $this->applyTTNJapanCityLogic($tourData, $tourModel, false);
+        }
+        
+        // Set image_check_change = 2 สำหรับทัวร์ใหม่ (ให้ดึงรูปจาก API)
+        $tourModel->image_check_change = 2;
+        
         // Process image if exists
-        $this->processImage($provider, $tourData, $tourModel);
+        $this->processImage($provider, $tourData, $tourModel, false); // false = creating new
         
         // Process PDF if exists  
         $this->processPDF($provider, $tourData, $tourModel);
@@ -1372,7 +1444,7 @@ class ApiManagementController extends Controller
         return ['action' => 'created', 'tour_id' => $tourModel->id, 'tour_model' => $tourModel];
     }
 
-    private function mapTourFieldsFromConfig($provider, $tourData, $tourModel)
+    private function mapTourFieldsFromConfig($provider, $tourData, $tourModel, $isUpdating = false)
     {
         $mappings = $provider->fieldMappings()->where('field_type', 'tour')->get();
         
@@ -1384,16 +1456,28 @@ class ApiManagementController extends Controller
                 $rules = is_string($mapping->transformation_rules) ? json_decode($mapping->transformation_rules, true) : $mapping->transformation_rules;
                 if ($rules && isset($rules['static_value'])) {
                     $tourModel->{$mapping->local_field} = $rules['static_value'];
-                    
-                    Log::info('Applied static value mapping', [
-                        'local_field' => $mapping->local_field,
-                        'static_value' => $rules['static_value']
-                    ]);
                     continue;
                 }
             }
             
             if ($apiValue !== null) {
+                // เช็ค check_change fields ก่อน update (เหมือน headcode เดิม 100%)
+                // ถ้าเป็น update และ user แก้ไขไว้แล้ว = ข้าม field นั้น
+                if ($isUpdating) {
+                    if ($mapping->local_field === 'name' && $tourModel->name_check_change != null) {
+                        continue;
+                    }
+                    if ($mapping->local_field === 'country_id' && $tourModel->country_check_change != null) {
+                        continue;
+                    }
+                    if ($mapping->local_field === 'airline_id' && $tourModel->airline_check_change != null) {
+                        continue;
+                    }
+                    if ($mapping->local_field === 'description' && $tourModel->description_check_change != null) {
+                        continue;
+                    }
+                }
+                
                 // Handle special field mappings
                 if ($mapping->local_field === 'country_id' && $mapping->api_field === 'CountryName') {
                     // Find country by name and create JSON array
@@ -1514,7 +1598,7 @@ class ApiManagementController extends Controller
         
         // Apply TTN Japan specific logic (like original ApiController.php)
         if ($provider->code === 'ttn' || $provider->code === 'ttn_japan') {
-            $this->applyTTNJapanSpecificLogic($provider, $tourData, $tourModel);
+            $this->applyTTNJapanSpecificLogic($provider, $tourData, $tourModel, $isUpdating);
         }
         
         // Apply conditions
@@ -1927,10 +2011,45 @@ class ApiManagementController extends Controller
         // This could skip records that don't meet certain criteria
     }
 
-
-
-    private function processImage($provider, $tourData, $tourModel)
+    /**
+     * Apply TTN Japan specific city_id logic (เหมือน headcode เดิม 100%)
+     */
+    private function applyTTNJapanCityLogic($tourData, $tourModel, $isUpdating = false)
     {
+        // เช็ค country_check_change ก่อน (เหมือน headcode)
+        if ($isUpdating && $tourModel->country_check_change != null) {
+            return; // user แก้ไขไว้แล้ว ข้ามไป
+        }
+        
+        if (isset($tourData['P_LOCATION']) && !empty($tourData['P_LOCATION'])) {
+            $city = \App\Models\Backend\CityModel::where('city_name_en', 'like', '%' . $tourData['P_LOCATION'] . '%')
+                ->where('status', 'on')
+                ->whereNull('deleted_at')
+                ->first();
+            
+            if ($city) {
+                $arr_ci = [(string)$city->id];
+                $tourModel->city_id = json_encode($arr_ci);
+            } else {
+                $tourModel->city_id = '[]';
+            }
+        }
+    }
+
+
+    private function processImage($provider, $tourData, $tourModel, $isUpdating = false)
+    {
+        // เช็ค image_check_change ก่อน (เหมือน headcode เดิม)
+        // ถ้า image_check_change = 1 = user แก้ไขแล้ว ไม่ต้องดึงจาก API
+        // ถ้า image_check_change = 2 หรือ null = ดึงจาก API ได้
+        if ($isUpdating && isset($tourModel->image_check_change) && $tourModel->image_check_change == 1) {
+            Log::info('Skipping image update - user modified', [
+                'provider' => $provider->code,
+                'tour_id' => $tourModel->id
+            ]);
+            return; // ข้าม เพราะ user แก้ไขรูปเองแล้ว
+        }
+        
         $imageField = $provider->fieldMappings()
             ->where('field_type', 'tour')
             ->where('local_field', 'image')
@@ -1976,9 +2095,19 @@ class ApiManagementController extends Controller
                     
                     $allowedExt = ['png', 'jpeg', 'jpg', 'webp'];
                     if (in_array($ext[1], $allowedExt)) {
+                        // Delete old image if updating
+                        if ($isUpdating && $tourModel->image != null) {
+                            Storage::disk('public')->delete($tourModel->image);
+                        }
+                        
                         $newPath = $dirPath . '/' . $filename;
                         Storage::disk('public')->put($newPath, $lg);
                         $tourModel->image = $newPath;
+                        
+                        // Set image_check_change = 2 (ดึงจาก API) เหมือน headcode เดิม
+                        if (!$isUpdating) {
+                            $tourModel->image_check_change = 2;
+                        }
                         
                         Log::info("Image downloaded successfully", [
                             'provider' => $provider->code,
@@ -2053,47 +2182,121 @@ class ApiManagementController extends Controller
         if (!$pdfUrl) return;
 
         try {
-            // Use Http client with SSL verification disabled and proper headers
-            $response = Http::withOptions([
-                'verify' => false, // Disable SSL verification
-                'timeout' => 60, // Longer timeout for PDF files
-                'connect_timeout' => 15
-            ])->withHeaders([
-                'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept' => 'application/pdf,application/octet-stream,*/*;q=0.9'
-            ])->get($pdfUrl);
+            // TTN Japan: บันทึก PDF link โดยตรง (Google Drive link)
+            if ($provider->code === 'ttn_japan' || $provider->code === 'ttn_all') {
+                $tourModel->pdf_file = $pdfUrl;
+                Log::info("TTN PDF link saved", [
+                    'provider' => $provider->code,
+                    'url' => $pdfUrl
+                ]);
+                return;
+            }
+            
+            // GO365 และ API อื่นๆ: Download PDF file
+            $headers = get_headers($pdfUrl, 1);
+            
+            $response = Http::get($pdfUrl);
             
             if ($response->successful()) {
-                // Extract filename from URL path
-                $parsedUrl = parse_url($pdfUrl);
-                $filename = basename($parsedUrl['path']);
                 
-                // Handle URLs with parameters like "?ver=4"
-                if (empty($filename) || strpos($filename, '.') === false) {
-                    $filename = 'tour_' . time() . '.pdf';
+                if ($response->header('Content-Type')) {
+                    $contentType = $response->header('Content-Type');
+                    
+                    if (strpos($contentType, 'application/pdf') !== false) {
+                        
+                        $filename = basename($pdfUrl);
+                        $ext = explode(".", $filename);
+                        $dirPath = 'upload/tour/pdf_file/' . $provider->code . 'api';
+                        $newPath = $dirPath . '/' . $filename;
+                        $newFileSize = strlen($response->body());
+                        
+                        // Create directory if not exists
+                        if (!Storage::disk('public')->exists($dirPath)) {
+                            Storage::disk('public')->makeDirectory($dirPath, 0755, true);
+                        }
+                        
+                        if (Storage::disk('public')->exists($tourModel->pdf_file)) {
+                            // เช็ค Date Modified
+                            if (isset($headers['Last-Modified'])) {
+                                $lastModified = date("Y-m-d H:i:s", strtotime($headers['Last-Modified']));
+                                $oldModified = $tourModel->date_mod_pdf;
+                                
+                                if ($lastModified != $oldModified) {
+                                    Storage::disk('public')->delete($tourModel->pdf_file);
+                                    
+                                    Storage::disk('public')->put($newPath, $response->body());
+                                    
+                                    // Check PDF version and apply header/footer
+                                    $applyHeaderFooter = false;
+                                    
+                                    // ตรวจสอบว่าจะใช้ provider-specific หรือ global setting
+                                    if ($provider->pdf_header_footer_enabled === 'on') {
+                                        $applyHeaderFooter = true;
+                                    } else {
+                                        $img_pdf = \App\Models\Backend\ImagePDFModel::first();
+                                        if ($img_pdf && $img_pdf->status == 'on') {
+                                            $applyHeaderFooter = true;
+                                        }
+                                    }
+                                    
+                                    if ($applyHeaderFooter) {
+                                        $filepdf = fopen(public_path($newPath), "r");
+                                        $line_first = fgets($filepdf);
+                                        preg_match_all('!\d+!', $line_first, $matches);
+                                        $pdfversion = implode('.', $matches[0]);
+                                        
+                                        if ($pdfversion > 1.6) {
+                                            $this->save_pdf($newPath, $provider);
+                                        }
+                                    }
+                                    
+                                    $tourModel->pdf_file = $newPath;
+                                    $tourModel->date_mod_pdf = $lastModified;
+                                }
+                            }
+                        } else {
+                            // ไฟล์ PDF ยังไม่มี - ดาวน์โหลดใหม่
+                            if (isset($headers['Last-Modified'])) {
+                                $lastModified = date("Y-m-d H:i:s", strtotime($headers['Last-Modified']));
+                                Storage::disk('public')->put($newPath, $response->body());
+                                
+                                // Check PDF version and apply header/footer
+                                $applyHeaderFooter = false;
+                                
+                                // ตรวจสอบว่าจะใช้ provider-specific หรือ global setting
+                                if ($provider->pdf_header_footer_enabled === 'on') {
+                                    $applyHeaderFooter = true;
+                                } else {
+                                    $img_pdf = \App\Models\Backend\ImagePDFModel::first();
+                                    if ($img_pdf && $img_pdf->status == 'on') {
+                                        $applyHeaderFooter = true;
+                                    }
+                                }
+                                
+                                if ($applyHeaderFooter) {
+                                    $filepdf = fopen(public_path($newPath), "r");
+                                    $line_first = fgets($filepdf);
+                                    preg_match_all('!\d+!', $line_first, $matches);
+                                    $pdfversion = implode('.', $matches[0]);
+                                    
+                                    if ($pdfversion > 1.6) {
+                                        $this->save_pdf($newPath, $provider);
+                                    }
+                                }
+                                
+                                $tourModel->pdf_file = $newPath;
+                                $tourModel->date_mod_pdf = $lastModified;
+                            }
+                        }
+                        
+                        Log::info("PDF downloaded successfully", [
+                            'provider' => $provider->code,
+                            'url' => $pdfUrl,
+                            'saved_path' => $newPath,
+                            'file_size' => $newFileSize
+                        ]);
+                    }
                 }
-                
-                // Ensure PDF extension
-                if (!preg_match('/\.pdf$/i', $filename)) {
-                    $filename .= '.pdf';
-                }
-                
-                // Create directory if not exists
-                $dirPath = 'upload/tour/pdf_file/' . $provider->code;
-                if (!Storage::disk('public')->exists($dirPath)) {
-                    Storage::disk('public')->makeDirectory($dirPath, 0755, true);
-                }
-                
-                $newPath = $dirPath . '/' . $filename;
-                Storage::disk('public')->put($newPath, $response->body());
-                $tourModel->pdf_file = $newPath;
-                
-                Log::info("PDF downloaded successfully", [
-                    'provider' => $provider->code,
-                    'url' => $pdfUrl,
-                    'saved_path' => $newPath,
-                    'file_size' => strlen($response->body())
-                ]);
             } else {
                 Log::warning("Failed to download PDF", [
                     'provider' => $provider->code,
@@ -2108,6 +2311,61 @@ class ApiManagementController extends Controller
                 'error' => $e->getMessage()
             ]);
         }
+    }
+    
+    private function save_pdf($filename, $provider = null)
+    {
+        // ตรวจสอบว่ามี provider-specific header/footer หรือไม่
+        if ($provider && $provider->pdf_header_footer_enabled === 'on') {
+            $image_header = $provider->pdf_header;
+            $image_footer = $provider->pdf_footer;
+            
+            // ถ้าไม่มีรูป ให้ใช้ global setting
+            if (!$image_header || !$image_footer) {
+                $data = \App\Models\Backend\ImagePDFModel::first();
+                $image_header = $image_header ?: $data->header;
+                $image_footer = $image_footer ?: $data->footer;
+            }
+            
+            Log::info("Using provider-specific PDF header/footer", [
+                'provider' => $provider->code,
+                'header' => $image_header,
+                'footer' => $image_footer
+            ]);
+        } else {
+            // ใช้ global setting
+            $data = \App\Models\Backend\ImagePDFModel::first();
+            $image_header = $data->header;
+            $image_footer = $data->footer;
+            
+            Log::info("Using global PDF header/footer", [
+                'header' => $image_header,
+                'footer' => $image_footer
+            ]);
+        }
+
+        $filePath = public_path($filename);
+        $outputFilePath = public_path($filename);
+        
+        $fpdi = new \setasign\Fpdi\Fpdi;
+        $count = $fpdi->setSourceFile($filePath);
+  
+        for ($i=1; $i<=$count; $i++) {
+            $template = $fpdi->importPage($i);
+            $size = $fpdi->getTemplateSize($template);
+            $fpdi->AddPage($size['orientation'], array($size['width'], $size['height']));
+            $fpdi->useTemplate($template);
+            
+            if ($image_header && file_exists(public_path($image_header))) {
+                $fpdi->Image(public_path($image_header), 0, 0, 210);
+            }
+            
+            if ($image_footer && file_exists(public_path($image_footer))) {
+                $fpdi->Image(public_path($image_footer), 0, 285, 210);
+            }
+        }
+
+        $fpdi->Output($outputFilePath, 'F');
     }
 
     private function processPeriods($provider, $tourData, $tourModel)
@@ -3249,10 +3507,10 @@ class ApiManagementController extends Controller
      * Apply TTN Japan specific logic like original ApiController.php
      * Handles country (JAPAN), city (P_LOCATION), airline (P_AIRLINE), and special settings
      */
-    private function applyTTNJapanSpecificLogic($provider, $tourData, $tourModel)
+    private function applyTTNJapanSpecificLogic($provider, $tourData, $tourModel, $isUpdating = false)
     {
-        // Force JAPAN as country (like original code)
-        if (!isset($tourModel->country_check_change) || $tourModel->country_check_change == null) {
+        // Force JAPAN as country (like original code) - เช็ค country_check_change ก่อน
+        if (!$isUpdating || !isset($tourModel->country_check_change) || $tourModel->country_check_change == null) {
             $country = \App\Models\Backend\CountryModel::where('country_name_en', 'like', '%JAPAN%')
                 ->where('status', 'on')
                 ->whereNull('deleted_at')
@@ -3263,24 +3521,24 @@ class ApiManagementController extends Controller
             } else {
                 $tourModel->country_id = '[]';
             }
-        }
-        
-        // Handle city from P_LOCATION
-        if (isset($tourData['P_LOCATION']) && $tourData['P_LOCATION']) {
-            $city = \App\Models\Backend\CityModel::where('city_name_en', 'like', '%' . $tourData['P_LOCATION'] . '%')
-                ->where('status', 'on')
-                ->whereNull('deleted_at')
-                ->first();
-                
-            if ($city) {
-                $tourModel->city_id = json_encode([(string)$city->id]);
-            } else {
-                $tourModel->city_id = '[]';
+            
+            // Handle city from P_LOCATION (same country_check_change condition)
+            if (isset($tourData['P_LOCATION']) && $tourData['P_LOCATION']) {
+                $city = \App\Models\Backend\CityModel::where('city_name_en', 'like', '%' . $tourData['P_LOCATION'] . '%')
+                    ->where('status', 'on')
+                    ->whereNull('deleted_at')
+                    ->first();
+                    
+                if ($city) {
+                    $tourModel->city_id = json_encode([(string)$city->id]);
+                } else {
+                    $tourModel->city_id = '[]';
+                }
             }
         }
         
-        // Handle airline from P_AIRLINE code
-        if (!isset($tourModel->airline_check_change) || $tourModel->airline_check_change == null) {
+        // Handle airline from P_AIRLINE code - เช็ค airline_check_change ก่อน
+        if (!$isUpdating || !isset($tourModel->airline_check_change) || $tourModel->airline_check_change == null) {
             if (isset($tourData['P_AIRLINE']) && $tourData['P_AIRLINE']) {
                 $airline = \App\Models\Backend\TravelTypeModel::where('code', $tourData['P_AIRLINE'])
                     ->where('status', 'on')
@@ -3293,16 +3551,19 @@ class ApiManagementController extends Controller
             }
         }
         
-        // Set special configuration values (like original code)
-        $tourModel->image_check_change = 2; // 1 ไม่ดึงรูปจาก Api , 2 ดึงรูปจาก Api
-        $tourModel->data_type = 2; // 1 system , 2 api
-        $tourModel->api_type = 'ttn';
-        
-        // wholesale_id and group_id are already set by config, but ensure they're correct
-        $tourModel->wholesale_id = 35; // TTN Japan specific
-        $tourModel->group_id = 3;
+        // Set special configuration values (like original code) - เฉพาะ new tour เท่านั้น
+        if (!$isUpdating) {
+            $tourModel->image_check_change = 2; // 1 ไม่ดึงรูปจาก Api , 2 ดึงรูปจาก Api
+            $tourModel->data_type = 2; // 1 system , 2 api
+            $tourModel->api_type = 'ttn';
+            
+            // wholesale_id and group_id are already set by config, but ensure they're correct
+            $tourModel->wholesale_id = 35; // TTN Japan specific
+            $tourModel->group_id = 3;
+        }
         
         Log::info('Applied TTN Japan specific logic', [
+            'is_updating' => $isUpdating,
             'tour_api_id' => $tourData['P_ID'] ?? 'unknown',
             'country_id' => $tourModel->country_id,
             'city_id' => $tourModel->city_id ?? null,

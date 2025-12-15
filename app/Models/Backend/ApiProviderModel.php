@@ -14,7 +14,8 @@ class ApiProviderModel extends Model
     
     protected $fillable = [
         'name', 'code', 'url', 'period_endpoint', 'tour_detail_endpoint', 
-        'requires_multi_step', 'url_parameters', 'headers', 'config', 'status', 'description'
+        'requires_multi_step', 'url_parameters', 'headers', 'config', 'status', 'description',
+        'pdf_header', 'pdf_footer', 'pdf_header_footer_enabled'
     ];
     
     protected $casts = [

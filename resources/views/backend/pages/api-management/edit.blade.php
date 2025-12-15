@@ -33,7 +33,7 @@
                     <!-- BEGIN: Form Layout -->
 
                     <div class="intro-y box p-5">
-                        <form id="edit-provider-form" method="POST" action="{{ route('api-management.update', $provider->id) }}">
+                        <form id="edit-provider-form" method="POST" action="{{ route('api-management.update', $provider->id) }}" enctype="multipart/form-data">
                             @csrf
                             @method('PUT')
 
@@ -152,6 +152,109 @@
                             @enderror
                         </div>
 
+                        <!-- PDF Header/Footer Settings -->
+                        <div class="md:col-span-2">
+                            <div class="bg-gradient-to-r from-purple-50 to-pink-50 p-6 rounded-lg border border-purple-200">
+                                <div class="flex items-center justify-between mb-4">
+                                    <div class="flex items-center space-x-3">
+                                        <div class="w-10 h-10 bg-gradient-to-br from-purple-500 to-pink-500 rounded-lg flex items-center justify-center shadow-lg">
+                                            <i data-lucide="file-text" class="w-5 h-5 text-white"></i>
+                                        </div>
+                                        <div>
+                                            <h3 class="text-lg font-semibold text-gray-800">PDF Header & Footer</h3>
+                                            <p class="text-sm text-gray-600">กำหนดรูป Header และ Footer สำหรับเอกสาร PDF ของ API นี้</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center space-x-2">
+                                        <label class="relative inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" name="pdf_header_footer_enabled" value="on" 
+                                                   {{ old('pdf_header_footer_enabled', $provider->pdf_header_footer_enabled ?? 'off') == 'on' ? 'checked' : '' }}
+                                                   class="sr-only peer" id="pdf_header_footer_toggle">
+                                            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
+                                            <span class="ml-3 text-sm font-medium text-gray-700">เปิดใช้งาน</span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div id="pdf_header_footer_content" class="space-y-4" style="display: {{ old('pdf_header_footer_enabled', $provider->pdf_header_footer_enabled ?? 'off') == 'on' ? 'block' : 'none' }};">
+                                    <!-- PDF Header -->
+                                    <div class="bg-white p-4 rounded-lg border border-gray-200">
+                                        <label class="block text-sm font-medium text-gray-700 mb-3">
+                                            <i data-lucide="arrow-up-circle" class="w-4 h-4 inline mr-1"></i>
+                                            PDF Header Image
+                                        </label>
+                                        
+                                        @if($provider->pdf_header && file_exists(public_path($provider->pdf_header)))
+                                            <div class="mb-3 p-3 bg-gray-50 rounded border border-gray-200">
+                                                <div class="flex items-center justify-between mb-2">
+                                                    <span class="text-sm text-gray-600">รูปปัจจุบัน:</span>
+                                                    <button type="button" onclick="document.getElementById('remove_pdf_header').value='1'; this.closest('.bg-gray-50').style.display='none';" 
+                                                            class="text-xs text-red-600 hover:text-red-800">
+                                                        <i data-lucide="trash-2" class="w-3 h-3 inline"></i> ลบ
+                                                    </button>
+                                                </div>
+                                                <img src="{{ asset($provider->pdf_header) }}" alt="PDF Header" class="max-w-full h-auto rounded border border-gray-300">
+                                                <p class="text-xs text-gray-500 mt-1">{{ $provider->pdf_header }}</p>
+                                            </div>
+                                            <input type="hidden" name="remove_pdf_header" id="remove_pdf_header" value="0">
+                                        @endif
+
+                                        <input type="file" name="pdf_header" accept="image/png,image/jpeg,image/jpg" 
+                                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500">
+                                        <p class="mt-2 text-xs text-gray-500">
+                                            <i data-lucide="info" class="w-3 h-3 inline"></i>
+                                            แนะนำขนาด: 793 x 45 pixels (สำหรับ A4), รองรับ PNG, JPG
+                                        </p>
+                                    </div>
+
+                                    <!-- PDF Footer -->
+                                    <div class="bg-white p-4 rounded-lg border border-gray-200">
+                                        <label class="block text-sm font-medium text-gray-700 mb-3">
+                                            <i data-lucide="arrow-down-circle" class="w-4 h-4 inline mr-1"></i>
+                                            PDF Footer Image
+                                        </label>
+                                        
+                                        @if($provider->pdf_footer && file_exists(public_path($provider->pdf_footer)))
+                                            <div class="mb-3 p-3 bg-gray-50 rounded border border-gray-200">
+                                                <div class="flex items-center justify-between mb-2">
+                                                    <span class="text-sm text-gray-600">รูปปัจจุบัน:</span>
+                                                    <button type="button" onclick="document.getElementById('remove_pdf_footer').value='1'; this.closest('.bg-gray-50').style.display='none';" 
+                                                            class="text-xs text-red-600 hover:text-red-800">
+                                                        <i data-lucide="trash-2" class="w-3 h-3 inline"></i> ลบ
+                                                    </button>
+                                                </div>
+                                                <img src="{{ asset($provider->pdf_footer) }}" alt="PDF Footer" class="max-w-full h-auto rounded border border-gray-300">
+                                                <p class="text-xs text-gray-500 mt-1">{{ $provider->pdf_footer }}</p>
+                                            </div>
+                                            <input type="hidden" name="remove_pdf_footer" id="remove_pdf_footer" value="0">
+                                        @endif
+
+                                        <input type="file" name="pdf_footer" accept="image/png,image/jpeg,image/jpg" 
+                                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500">
+                                        <p class="mt-2 text-xs text-gray-500">
+                                            <i data-lucide="info" class="w-3 h-3 inline"></i>
+                                            แนะนำขนาด: 793 x 45 pixels (สำหรับ A4), รองรับ PNG, JPG
+                                        </p>
+                                    </div>
+
+                                    <!-- Info Box -->
+                                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                                        <div class="flex items-start space-x-2">
+                                            <i data-lucide="lightbulb" class="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5"></i>
+                                            <div class="text-sm text-blue-800">
+                                                <p class="font-medium mb-1">คำแนะนำ:</p>
+                                                <ul class="list-disc list-inside space-y-1 text-xs">
+                                                    <li>Header/Footer จะถูกใส่เข้าไปใน PDF โดยอัตโนมัติเมื่อ sync ทัวร์</li>
+                                                    <li>ใช้เฉพาะกับ API ที่มีการ download PDF เท่านั้น (GO365, Zego, Best, etc.)</li>
+                                                    <li>TTN Japan จะไม่ใช้ Header/Footer เพราะเก็บเป็น Google Drive link</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <div>
                             <label for="status" class="block text-sm font-medium text-gray-700 mb-2">สถานะ</label>
                             <select id="status" name="status" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
@@ -219,7 +322,7 @@
                                    placeholder="Header value" 
                                    class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
                             <button type="button" onclick="removeHeader(this)" class="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg">
-                                <i class="lucide lucide-trash-2 w-4 h-4"></i>
+                                <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ
                             </button>
                         </div>
                         @php $headerIndex++; @endphp
@@ -383,6 +486,7 @@
                                     @php $tourMappingIndex = 0; @endphp
                                     @foreach(($provider->fieldMappings ?? collect())->where('field_type', 'tour') as $mapping)
                                     <tr class="field-mapping-item">
+                                     
                                         <input type="hidden" name="field_mappings[{{ $tourMappingIndex }}][id]" value="{{ $mapping->id }}">
                                         <input type="hidden" name="field_mappings[{{ $tourMappingIndex }}][field_type]" value="tour">
                                         
@@ -391,10 +495,12 @@
                                                 <option value="">Select field</option>
                                                 @foreach(['api_id', 'code1', 'name', 'description', 'rating', 'num_day', 'image', 'pdf_file', 'country_name', 'airline_code', 'api_type', 'data_type', 'country_id', 'airline_id'] as $field)
                                                 <option value="{{ $field }}" {{ $mapping->local_field == $field ? 'selected' : '' }}>{{ $field }}</option>
+                                              
                                                 @endforeach
                                             </select>
                                         </td>
                                         <td>
+                                           
                                             @if(empty($mapping->api_field))
                                                 @php
                                                     $transformationRules = is_string($mapping->transformation_rules) ? json_decode($mapping->transformation_rules, true) : $mapping->transformation_rules;
@@ -442,7 +548,7 @@
                                         </td>
                                         <td class="text-center">
                                             <button type="button" onclick="removeFieldMapping(this)" class="btn btn-danger btn-sm">
-                                                <i class="lucide lucide-trash-2 w-4 h-4"></i>
+                                                <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ
                                             </button>
                                         </td>
                                     </tr>
@@ -495,12 +601,13 @@
                                 @php $periodMappingIndex = $tourMappingIndex; @endphp
                                 @foreach(($provider->fieldMappings ?? collect())->where('field_type', 'period') as $mapping)
                                 <tr class="field-mapping-item">
+                                
                                     <input type="hidden" name="field_mappings[{{ $periodMappingIndex }}][id]" value="{{ $mapping->id }}">
                                     <input type="hidden" name="field_mappings[{{ $periodMappingIndex }}][field_type]" value="period">
                                     
                                     <td>
                                         <select name="field_mappings[{{ $periodMappingIndex }}][local_field]" class="form-select w-full" required>
-                                            <option value="">Select fields</option>
+                                            <option value="">Select field</option>
                                             @foreach([
                                                 'tour_id', 'period_api_id', 'period_code', 'group_date', 'start_date', 'end_date', 
                                                 'price1', 'special_price1', 'old_price1', 'price2', 'special_price2', 'old_price2',
@@ -560,7 +667,7 @@
                                     </td>
                                     <td class="text-center">
                                         <button type="button" onclick="removeFieldMapping(this)" class="btn btn-danger btn-sm">
-                                            <i class="lucide lucide-trash-2 w-4 h-4"></i>
+                                            <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ
                                         </button>
                                     </td>
                                 </tr>
@@ -671,7 +778,7 @@
                                     </td>
                                     <td class="text-center">
                                         <button type="button" onclick="removePromotionRule(this)" class="btn btn-danger btn-sm">
-                                            <i class="lucide lucide-trash-2 w-4 h-4"></i>
+                                            <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ 
                                         </button>
                                     </td>
                                 </tr>
@@ -788,7 +895,7 @@
                                     </td>
                                     <td class="text-center">
                                         <button type="button" onclick="removeCondition(this)" class="btn btn-danger btn-sm">
-                                            <i class="lucide lucide-trash-2 w-4 h-4"></i>
+                                            <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ
                                         </button>
                                     </td>
                                 </tr>
@@ -830,7 +937,7 @@
                                             <i class="lucide lucide-edit w-4 h-4"></i> แก้ไข
                                         </button>
                                         <button type="button" onclick="deleteSchedule({{ $schedule->id }})" class="text-red-600 hover:text-red-800 text-sm">
-                                            <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ
+                                            <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ ลบ
                                         </button>
                                     </div>
                                 </div>
@@ -914,7 +1021,7 @@ function addHeader() {
         <input type="text" name="headers[${headerIndex}][value]" placeholder="Header value" 
                class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
         <button type="button" onclick="removeHeader(this)" class="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg">
-            <i class="lucide lucide-trash-2 w-4 h-4"></i>
+            <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ
         </button>
     `;
     container.appendChild(div);
@@ -1008,7 +1115,7 @@ function addFieldMapping(type) {
         </td>
         <td class="text-center">
             <button type="button" onclick="removeFieldMapping(this)" class="btn btn-danger btn-sm">
-                <i class="lucide lucide-trash-2 w-4 h-4"></i>
+                <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ
             </button>
         </td>
     `;
@@ -1097,7 +1204,7 @@ function addCondition() {
         </td>
         <td class="text-center">
             <button type="button" onclick="removeCondition(this)" class="btn btn-danger btn-sm">
-                <i class="lucide lucide-trash-2 w-4 h-4"></i>
+                <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ
             </button>
         </td>
     `;
@@ -1177,7 +1284,7 @@ function addPromotionRule() {
         </td>
         <td class="text-center">
             <button type="button" onclick="removePromotionRule(this)" class="btn btn-danger btn-sm">
-                <i class="lucide lucide-trash-2 w-4 h-4"></i>
+                <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ
             </button>
         </td>
     `;
@@ -1543,6 +1650,25 @@ function updateStaticValueDisplay(index) {
                     }
                 });
             }
+        }
+
+        // Toggle PDF Header/Footer fields
+        const pdfToggle = document.getElementById('pdf_header_footer_toggle');
+        const pdfContent = document.getElementById('pdf_header_footer_content');
+        
+        if (pdfToggle) {
+            pdfToggle.addEventListener('change', function() {
+                if (this.checked) {
+                    pdfContent.style.display = 'block';
+                } else {
+                    pdfContent.style.display = 'none';
+                }
+            });
+        }
+
+        // Initialize Lucide icons
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
         }
     </script>
 
