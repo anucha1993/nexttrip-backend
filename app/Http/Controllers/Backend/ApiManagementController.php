@@ -260,21 +260,30 @@ class ApiManagementController extends Controller
                         // กำหนด transformation_rules สำหรับ static values
                         $transformationRules = $mapping['transformation_rules'] ?? [];
                         
-                        // ถ้ามี static_value ให้สร้าง transformation rules
-                        if (!empty($mapping['static_value'])) {
+                        $apiField = $mapping['api_field'] ?? '';
+                        $staticValue = $mapping['static_value'] ?? '';
+                        
+                        // ตรวจสอบว่า api_field ขึ้นต้นด้วย "static:" หรือไม่
+                        if (strpos($apiField, 'static:') === 0) {
+                            // แยก static value จาก api_field
+                            $staticValue = substr($apiField, 7); // ตัด "static:" ออก
+                            $apiField = ''; // clear api_field
+                        }
+                        
+                        // ถ้ามี static_value หรือ static prefix ให้สร้าง transformation rules
+                        if (!empty($staticValue)) {
                             $transformationRules = [
                                 'type' => 'static_value',
-                                'static_value' => $mapping['static_value']
+                                'static_value' => $staticValue
                             ];
-                            // ถ้าเป็น static value ให้ clear api_field
-                            $mapping['api_field'] = '';
+                            $apiField = ''; // ถ้าเป็น static value ให้ clear api_field
                         }
                         
                         ApiFieldMappingModel::create([
                             'api_provider_id' => $provider->id,
                             'field_type' => $mapping['field_type'] ?? 'tour',
                             'local_field' => $mapping['local_field'],
-                            'api_field' => $mapping['api_field'] ?? '',
+                            'api_field' => $apiField,
                             'data_type' => $mapping['data_type'] ?? 'string',
                             'transformation_rules' => $transformationRules,
                             'is_required' => $mapping['is_required'] ?? false
@@ -2391,9 +2400,25 @@ class ApiManagementController extends Controller
                     'tour_id' => $tourModel->id,
                     'periods_count' => count($periodsArray)
                 ]);
+                
+                // เก็บ max discount percent สำหรับ Zego
+                $maxDiscountPercents = [];
+                
                 foreach ($periodsArray as $periodData) {
-                    $this->createPeriodFromArray($provider, $periodData, $tourModel, $tourData);
+                    $period = $this->createPeriodFromArray($provider, $periodData, $tourModel, $tourData);
+                    
+                    // Zego-specific: เก็บ discount percent
+                    if ($provider->code === 'zego' && $period) {
+                        $discountPercent = $this->calculateZegoPeriodDiscount($period);
+                        $maxDiscountPercents[] = $discountPercent;
+                    }
                 }
+                
+                // Zego-specific: คำนวณ promotion หลังจากสร้าง periods ทั้งหมดแล้ว
+                if ($provider->code === 'zego' && !empty($maxDiscountPercents)) {
+                    $this->updateZegoPromotion($tourModel, max($maxDiscountPercents));
+                }
+                
                 return;
             }
         }
@@ -2526,6 +2551,11 @@ class ApiManagementController extends Controller
         // Set fallback values from period data
         $this->setFallbackPeriodValues($period, $periodData);
         
+        // Zego-specific: คำนวณ special_price และ promotion
+        if ($provider->code === 'zego') {
+            $this->calculateZegoSpecialPrices($period, $periodData, $tourData);
+        }
+        
         Log::info('Creating period from array data', [
             'provider' => $provider->code,
             'tour_id' => $tourModel->id,
@@ -2539,6 +2569,8 @@ class ApiManagementController extends Controller
         $period->offsetUnset('status_period_text');
         
         $period->save();
+        
+        return $period;
     }
 
     private function createDefaultPeriod($provider, $tourData, $tourModel)
@@ -2648,6 +2680,163 @@ class ApiManagementController extends Controller
         // This method is now a wrapper that calls createPeriodFromArray
         // for backward compatibility
         $this->createPeriodFromArray($provider, $periodData, $tourModel);
+    }
+
+    /**
+     * คำนวณ special_price สำหรับ Zego API ตาม logic ของ headcode
+     * - Price = ราคาเต็ม (price1, price2, price3, price4)
+     * - Price_End = ราคาโปร (special_price1, special_price2, special_price3, special_price4)
+     * - ถ้า Price_End = 0 หมายถึงไม่มีโปร ให้ special_price = Price
+     */
+    private function calculateZegoSpecialPrices($period, $periodData, $tourData)
+    {
+        $maxDiscountPercent = 0;
+        
+        // ผู้ใหญ่พักคู่ (price1)
+        $price_start = $periodData['Price'] ?? 0;
+        $price_end = $periodData['Price_End'] ?? 0;
+        
+        $period->price1 = $price_start;
+        if ($price_end > 0 && $price_start > $price_end) {
+            // มีโปรโมชั่น
+            $period->special_price1 = $price_end;
+            $discount = $price_start - $price_end;
+            $discountPercent = $price_start != 0 ? ($discount / $price_start) * 100 : 0;
+            $maxDiscountPercent = max($maxDiscountPercent, $discountPercent);
+        } else {
+            // ไม่มีโปรโมชั่น
+            $period->special_price1 = $price_start;
+        }
+        
+        // ผู้ใหญ่พักเดี่ยว (price2)
+        $price_single_start = $periodData['Price_Single_Bed'] ?? 0;
+        $price_single_end = $periodData['Price_Single_Bed_End'] ?? 0;
+        
+        $period->price2 = $price_single_start;
+        if ($price_single_end > 0 && $price_single_start > $price_single_end) {
+            $period->special_price2 = $price_single_end;
+            $discount = $price_single_start - $price_single_end;
+            $discountPercent = $price_single_start != 0 ? ($discount / $price_single_start) * 100 : 0;
+            $maxDiscountPercent = max($maxDiscountPercent, $discountPercent);
+        } else {
+            $period->special_price2 = $price_single_start;
+        }
+        
+        // เด็กมีเตียง (price3)
+        $price_child_start = $periodData['Price_Child'] ?? 0;
+        $price_child_end = $periodData['Price_Child_End'] ?? 0;
+        
+        $period->price3 = $price_child_start;
+        if ($price_child_end > 0 && $price_child_start > $price_child_end) {
+            $period->special_price3 = $price_child_end;
+            $discount = $price_child_start - $price_child_end;
+            $discountPercent = $price_child_start != 0 ? ($discount / $price_child_start) * 100 : 0;
+            $maxDiscountPercent = max($maxDiscountPercent, $discountPercent);
+        } else {
+            $period->special_price3 = $price_child_start;
+        }
+        
+        // เด็กไม่มีเตียง (price4)
+        $price_childnb_start = $periodData['Price_ChildNB'] ?? 0;
+        $price_childnb_end = $periodData['Price_ChildNB_End'] ?? 0;
+        
+        $period->price4 = $price_childnb_start;
+        if ($price_childnb_end > 0 && $price_childnb_start > $price_childnb_end) {
+            $period->special_price4 = $price_childnb_end;
+            $discount = $price_childnb_start - $price_childnb_end;
+            $discountPercent = $price_childnb_start != 0 ? ($discount / $price_childnb_start) * 100 : 0;
+            $maxDiscountPercent = max($maxDiscountPercent, $discountPercent);
+        } else {
+            $period->special_price4 = $price_childnb_start;
+        }
+        
+        Log::info('Zego special prices calculated', [
+            'period_id' => $period->period_code,
+            'max_discount_percent' => $maxDiscountPercent,
+            'price1' => $period->price1,
+            'special_price1' => $period->special_price1,
+            'price2' => $period->price2,
+            'special_price2' => $period->special_price2
+        ]);
+        
+        // เก็บค่า max discount percent สำหรับคำนวณ promotion ทีหลัง
+        return $maxDiscountPercent;
+    }
+
+    /**
+     * คำนวณ discount percent ของ period (สำหรับ Zego)
+     */
+    private function calculateZegoPeriodDiscount($period)
+    {
+        $discountPercents = [];
+        
+        // price1 (ผู้ใหญ่พักคู่)
+        if ($period->price1 > 0 && $period->special_price1 > 0) {
+            $discount = $period->price1 - $period->special_price1;
+            if ($discount > 0) {
+                $discountPercents[] = ($discount / $period->price1) * 100;
+            }
+        }
+        
+        // price2 (ผู้ใหญ่พักเดี่ยว)
+        if ($period->price2 > 0 && $period->special_price2 > 0) {
+            $discount = $period->price2 - $period->special_price2;
+            if ($discount > 0) {
+                $discountPercents[] = ($discount / $period->price2) * 100;
+            }
+        }
+        
+        // price3 (เด็กมีเตียง)
+        if ($period->price3 > 0 && $period->special_price3 > 0) {
+            $discount = $period->price3 - $period->special_price3;
+            if ($discount > 0) {
+                $discountPercents[] = ($discount / $period->price3) * 100;
+            }
+        }
+        
+        // price4 (เด็กไม่มีเตียง)
+        if ($period->price4 > 0 && $period->special_price4 > 0) {
+            $discount = $period->price4 - $period->special_price4;
+            if ($discount > 0) {
+                $discountPercents[] = ($discount / $period->price4) * 100;
+            }
+        }
+        
+        return !empty($discountPercents) ? max($discountPercents) : 0;
+    }
+
+    /**
+     * อัพเดท promotion สำหรับ Zego tour ตาม max discount percent
+     * - >= 30% = โปรไฟไหม้ (promotion1 = Y, promotion2 = N)
+     * - > 0% และ < 30% = โปรธรรมดา (promotion1 = N, promotion2 = Y)
+     * - 0% = ไม่มีโปร (promotion1 = N, promotion2 = N)
+     */
+    private function updateZegoPromotion($tourModel, $maxDiscountPercent)
+    {
+        if ($maxDiscountPercent >= 30) {
+            $tourModel->promotion1 = 'Y';
+            $tourModel->promotion2 = 'N';
+            Log::info('Zego tour set as fire promotion', [
+                'tour_id' => $tourModel->id,
+                'discount_percent' => $maxDiscountPercent
+            ]);
+        } elseif ($maxDiscountPercent > 0) {
+            $tourModel->promotion1 = 'N';
+            $tourModel->promotion2 = 'Y';
+            Log::info('Zego tour set as regular promotion', [
+                'tour_id' => $tourModel->id,
+                'discount_percent' => $maxDiscountPercent
+            ]);
+        } else {
+            $tourModel->promotion1 = 'N';
+            $tourModel->promotion2 = 'N';
+            Log::info('Zego tour has no promotion', [
+                'tour_id' => $tourModel->id,
+                'discount_percent' => $maxDiscountPercent
+            ]);
+        }
+        
+        $tourModel->save();
     }
 
     private function updateTourPrice($tourModel)
