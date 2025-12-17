@@ -613,7 +613,7 @@
                                                 'price1', 'special_price1', 'old_price1', 'price2', 'special_price2', 'old_price2',
                                                 'price3', 'special_price3', 'old_price3', 'price4', 'special_price4', 'old_price4',
                                                 'day', 'night', 'group', 'count', 'promotion_id', 'pro_start_date', 'pro_end_date',
-                                                'status_display', 'status_period', 'api_type'
+                                                'status_display', 'status_period', 'api_type','periods'
                                             ] as $field)
                                             <option value="{{ $field }}" {{ $mapping->local_field == $field ? 'selected' : '' }}>{{ $field }}</option>
                                             @endforeach

@@ -1610,6 +1610,11 @@ class ApiManagementController extends Controller
             $this->applyTTNJapanSpecificLogic($provider, $tourData, $tourModel, $isUpdating);
         }
         
+        // Apply Best Consortium specific logic (like original ApiController.php)
+        if ($provider->code === 'bestconsortium' || $provider->code === 'best') {
+            $this->applyBestConsortiumSpecificLogic($provider, $tourData, $tourModel, $isUpdating);
+        }
+        
         // Apply conditions
         $this->applyConditions($provider, $tourData, $tourModel);
     }
@@ -2045,6 +2050,52 @@ class ApiManagementController extends Controller
         }
     }
 
+    /**
+     * Apply Best Consortium specific logic (เหมือน headcode เดิม 100%)
+     * - Airline mapping: ใช้ airline_name แทน code (LIKE search)
+     * - Country mapping: ใช้ country_name_eng (LIKE search)
+     */
+    private function applyBestConsortiumSpecificLogic($provider, $tourData, $tourModel, $isUpdating = false)
+    {
+        // Airline mapping
+        if (!($isUpdating && $tourModel->airline_check_change != null)) {
+            if (isset($tourData['airline_name']) && !empty($tourData['airline_name'])) {
+                $airline = \App\Models\Backend\TravelTypeModel::where('travel_name', 'like', '%' . $tourData['airline_name'] . '%')
+                    ->where('status', 'on')
+                    ->whereNull('deleted_at')
+                    ->first();
+                
+                if ($airline) {
+                    $tourModel->airline_id = $airline->id;
+                    Log::info('Best Consortium airline mapped', [
+                        'airline_name' => $tourData['airline_name'],
+                        'matched_id' => $airline->id,
+                        'matched_name' => $airline->travel_name
+                    ]);
+                }
+            }
+        }
+        
+        // Country mapping from country_name_eng
+        if (!($isUpdating && $tourModel->country_check_change != null)) {
+            if (isset($tourData['country_name_eng']) && !empty($tourData['country_name_eng'])) {
+                $country = \App\Models\Backend\CountryModel::where('country_name_en', 'like', '%' . $tourData['country_name_eng'] . '%')
+                    ->where('status', 'on')
+                    ->whereNull('deleted_at')
+                    ->first();
+                
+                if ($country) {
+                    $tourModel->country_id = json_encode([(string)$country->id]);
+                    Log::info('Best Consortium country mapped', [
+                        'country_name_eng' => $tourData['country_name_eng'],
+                        'matched_id' => $country->id,
+                        'matched_name' => $country->country_name_en
+                    ]);
+                }
+            }
+        }
+    }
+
 
     private function processImage($provider, $tourData, $tourModel, $isUpdating = false)
     {
@@ -2069,9 +2120,30 @@ class ApiManagementController extends Controller
         $imageUrl = $tourData[$imageField->api_field] ?? null;
         if (!$imageUrl) return;
 
+        // Best Consortium: บันทึก image URL โดยตรง (403 Forbidden block downloads)
+        if ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
+            $tourModel->image = $imageUrl;
+            $tourModel->image_check_change = 2; // ดึงจาก API
+            Log::info("Best Consortium image URL saved", [
+                'provider' => $provider->code,
+                'url' => $imageUrl
+            ]);
+            return;
+        }
+
         try {
+            // เพิ่ม headers สำหรับ providers อื่นๆ
+            $headers = [
+                'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer' => 'https://www.best-consortium.com/',
+                'Accept' => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                'Accept-Language' => 'en-US,en;q=0.9,th;q=0.8',
+            ];
+            
             // Check HTTP response first
-            $response = Http::withOptions(['verify' => false])->get($imageUrl);
+            $response = Http::withOptions(['verify' => false])
+                ->withHeaders($headers)
+                ->get($imageUrl);
             
             if ($response->successful()) {
                 $contentLength = $response->header('Content-Length');
@@ -2097,8 +2169,8 @@ class ApiManagementController extends Controller
                         Storage::disk('public')->makeDirectory($dirPath, 0755, true);
                     }
                     
-                    // Use original URL for Image::make (like original code)
-                    $lg = Image::make($imageUrl);
+                    // Use response body for Image::make เพื่อส่ง headers
+                    $lg = Image::make($response->body());
                     $ext = explode("/", $lg->mime());
                     $lg->resize(600, 600)->stream();
                     
@@ -2142,7 +2214,16 @@ class ApiManagementController extends Controller
         } catch (\Exception $e) {
             // If Image::make() fails, fallback to using response body
             try {
-                $response = Http::withOptions(['verify' => false])->get($imageUrl);
+                $headers = [
+                    'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer' => 'https://www.best-consortium.com/',
+                    'Accept' => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                ];
+                
+                $response = Http::withOptions(['verify' => false])
+                    ->withHeaders($headers)
+                    ->get($imageUrl);
+                    
                 if ($response->successful()) {
                     $filename = basename($imageUrl);
                     $dirPath = 'upload/tour/' . $provider->code;
@@ -2213,7 +2294,18 @@ class ApiManagementController extends Controller
                     
                     if (strpos($contentType, 'application/pdf') !== false) {
                         
-                        $filename = basename($pdfUrl);
+                        // แก้ไข: เอา query string ออกก่อน basename
+                        $urlPath = parse_url($pdfUrl, PHP_URL_PATH);
+                        $filename = basename($urlPath ?: $pdfUrl);
+                        
+                        // Sanitize filename: เอาอักขระพิเศษออก
+                        $filename = preg_replace('/[^a-zA-Z0-9._-]/', '_', $filename);
+                        
+                        // ถ้าไม่มี extension .pdf ให้เพิ่มให้
+                        if (!str_ends_with(strtolower($filename), '.pdf')) {
+                            $filename .= '.pdf';
+                        }
+                        
                         $ext = explode(".", $filename);
                         $dirPath = 'upload/tour/pdf_file/' . $provider->code . 'api';
                         $newPath = $dirPath . '/' . $filename;
@@ -2551,9 +2643,11 @@ class ApiManagementController extends Controller
         // Set fallback values from period data
         $this->setFallbackPeriodValues($period, $periodData);
         
-        // Zego-specific: คำนวณ special_price และ promotion
+        // Provider-specific calculations
         if ($provider->code === 'zego') {
             $this->calculateZegoSpecialPrices($period, $periodData, $tourData);
+        } elseif ($provider->code === 'bestconsortium' || $provider->code === 'best') {
+            $this->calculateBestPeriodData($period, $periodData, $tourData);
         }
         
         Log::info('Creating period from array data', [
@@ -2761,6 +2855,99 @@ class ApiManagementController extends Controller
         
         // เก็บค่า max discount percent สำหรับคำนวณ promotion ทีหลัง
         return $maxDiscountPercent;
+    }
+
+    /**
+     * คำนวณข้อมูล Period สำหรับ Best Consortium API (ตาม headcode เดิม 100%)
+     * - แปลงวันที่ MM/DD/YYYY → YYYY-MM-DD
+     * - Extract day/night จาก time field "5 วัน 3 คืน"
+     * - คำนวณ special_price จาก adultPrice_old - adultPrice
+     * - Map status_period จาก avbl field
+     * - Set count = 0 ถ้า avbl เป็นสถานะพิเศษ
+     */
+    private function calculateBestPeriodData($period, $periodData, $tourData)
+    {
+        // 1. แปลงวันที่ MM/DD/YYYY → YYYY-MM-DD
+        if (isset($periodData['dateGo']) && !empty($periodData['dateGo'])) {
+            $go = explode('/', $periodData['dateGo']);
+            if (count($go) === 3) {
+                $period->start_date = "{$go[2]}-{$go[0]}-{$go[1]}"; // YYYY-MM-DD
+                $period->group_date = date('mY', strtotime($period->start_date));
+            }
+        }
+        
+        if (isset($periodData['dateBack']) && !empty($periodData['dateBack'])) {
+            $back = explode('/', $periodData['dateBack']);
+            if (count($back) === 3) {
+                $period->end_date = "{$back[2]}-{$back[0]}-{$back[1]}"; // YYYY-MM-DD
+            }
+        }
+        
+        // 2. Extract day/night จาก time field "5 วัน 3 คืน"
+        if ($tourData && isset($tourData['time'])) {
+            preg_match_all('/\d+/', $tourData['time'], $matches);
+            $period->day = isset($matches[0][0]) ? (int)$matches[0][0] : 0;
+            $period->night = isset($matches[0][1]) ? (int)$matches[0][1] : 0;
+        }
+        
+        // 3. คำนวณ special_price จาก adultPrice_old - adultPrice
+        $price1_old = isset($periodData['adultPrice_old']) ? floatval($periodData['adultPrice_old']) : 0;
+        $price1 = isset($periodData['adultPrice']) ? floatval($periodData['adultPrice']) : 0;
+        
+        if ($price1_old > $price1 && $price1 > 0) {
+            $discount = $price1_old - $price1;
+            $period->price1 = $price1_old; // ราคาเต็ม
+            
+            if ($discount < $price1_old) {
+                $period->special_price1 = $discount; // ส่วนลด
+            } else {
+                $period->special_price1 = 0.00;
+            }
+        } else {
+            $period->price1 = $price1;
+            $period->special_price1 = $price1; // ไม่มีส่วนลด ให้เท่ากับราคาปกติ
+        }
+        
+        // ราคาอื่นๆ (ไม่คำนวณส่วนลด)
+        $period->price2 = isset($periodData['singlePrice']) ? floatval($periodData['singlePrice']) : 0;
+        $period->price3 = isset($periodData['childWbPrice']) ? floatval($periodData['childWbPrice']) : 0;
+        $period->price4 = isset($periodData['childNbPrice']) ? floatval($periodData['childNbPrice']) : 0;
+        
+        // 4. Map status_period จาก avbl field
+        $avbl = $periodData['avbl'] ?? '';
+        
+        if ($avbl === 'เต็ม' || $avbl === 'ปิดกรุ๊ป') {
+            $period->status_period = 3; // Full/Closed
+        } elseif ($avbl === 'รอชำระเงิน' || $avbl === 'รอคิว' || $avbl === 'W/L') {
+            $period->status_period = 2; // Waiting
+        } else {
+            $period->status_period = 1; // Available
+        }
+        
+        // 5. Set count = 0 ถ้า avbl เป็นสถานะพิเศษ
+        if ($avbl === 'เต็ม' || $avbl === 'ปิดกรุ๊ป' || $avbl === 'รอคิว' || $avbl === 'รอชำระเงิน' || $avbl === 'W/L') {
+            $period->count = 0;
+        } else {
+            $period->count = is_numeric($avbl) ? (int)$avbl : 0;
+        }
+        
+        // 6. Set group size
+        if (isset($periodData['groupSize'])) {
+            $period->group = (int)$periodData['groupSize'];
+        }
+        
+        Log::info('Best period data calculated', [
+            'period_code' => $period->period_code,
+            'start_date' => $period->start_date,
+            'end_date' => $period->end_date,
+            'day' => $period->day,
+            'night' => $period->night,
+            'price1' => $period->price1,
+            'special_price1' => $period->special_price1,
+            'status_period' => $period->status_period,
+            'count' => $period->count,
+            'avbl' => $avbl
+        ]);
     }
 
     /**
