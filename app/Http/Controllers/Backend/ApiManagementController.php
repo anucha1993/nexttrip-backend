@@ -2121,12 +2121,50 @@ class ApiManagementController extends Controller
         if (!$imageUrl) return;
 
         try {
-            // เพิ่ม headers เพื่อหลีกเลี่ยง 403 Forbidden (สำหรับ Best Consortium และ providers อื่นๆ)
+            // Best Consortium: ใช้ Image::make($url) โดยตรง (เหมือน headcode) เพื่อหลีกเลี่ยง 403
+            if ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
+                $filename = basename($imageUrl);
+                
+                // Create directory if not exists
+                $dirPath = 'upload/tour/' . $provider->code;
+                if (!Storage::disk('public')->exists($dirPath)) {
+                    Storage::disk('public')->makeDirectory($dirPath, 0755, true);
+                }
+                
+                // ใช้ Image::make() โดยตรงเหมือน headcode
+                $lg = Image::make($imageUrl);
+                $ext = explode("/", $lg->mime());
+                $lg->resize(600, 600)->stream();
+                
+                $allowedExt = ['png', 'jpeg', 'jpg', 'webp'];
+                if (in_array($ext[1], $allowedExt)) {
+                    // Delete old image if updating
+                    if ($isUpdating && $tourModel->image != null) {
+                        Storage::disk('public')->delete($tourModel->image);
+                    }
+                    
+                    $newPath = $dirPath . '/' . $filename;
+                    Storage::disk('public')->put($newPath, $lg);
+                    $tourModel->image = $newPath;
+                    
+                    // Set image_check_change = 2 (ดึงจาก API)
+                    if (!$isUpdating) {
+                        $tourModel->image_check_change = 2;
+                    }
+                    
+                    Log::info("Best Consortium image downloaded successfully (direct method)", [
+                        'provider' => $provider->code,
+                        'url' => $imageUrl,
+                        'saved_path' => $newPath
+                    ]);
+                }
+                return;
+            }
+            
+            // Providers อื่นๆ: ใช้ HTTP client
             $headers = [
                 'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer' => 'https://www.best-consortium.com/',
                 'Accept' => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-                'Accept-Language' => 'en-US,en;q=0.9,th;q=0.8',
             ];
             
             // Check HTTP response first
@@ -2158,7 +2196,7 @@ class ApiManagementController extends Controller
                         Storage::disk('public')->makeDirectory($dirPath, 0755, true);
                     }
                     
-                    // Use response body for Image::make เพื่อส่ง headers
+                    // Use response body for Image::make
                     $lg = Image::make($response->body());
                     $ext = explode("/", $lg->mime());
                     $lg->resize(600, 600)->stream();
@@ -2201,11 +2239,46 @@ class ApiManagementController extends Controller
                 ]);
             }
         } catch (\Exception $e) {
-            // If Image::make() fails, fallback to using response body
+            // Best Consortium: ลอง Image::make() โดยตรงก่อน (เหมือน headcode)
+            if ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
+                try {
+                    $filename = basename($imageUrl);
+                    $dirPath = 'upload/tour/' . $provider->code;
+                    if (!Storage::disk('public')->exists($dirPath)) {
+                        Storage::disk('public')->makeDirectory($dirPath, 0755, true);
+                    }
+                    
+                    $lg = Image::make($imageUrl);
+                    $ext = explode("/", $lg->mime());
+                    $lg->resize(600, 600)->stream();
+                    
+                    $allowedExt = ['png', 'jpeg', 'jpg', 'webp'];
+                    if (in_array($ext[1], $allowedExt)) {
+                        $newPath = $dirPath . '/' . $filename;
+                        Storage::disk('public')->put($newPath, $lg);
+                        $tourModel->image = $newPath;
+                        
+                        Log::info("Best Consortium image downloaded (fallback direct method)", [
+                            'provider' => $provider->code,
+                            'url' => $imageUrl,
+                            'saved_path' => $newPath
+                        ]);
+                    }
+                    return;
+                } catch (\Exception $fallbackError) {
+                    Log::error("Best Consortium image download failed", [
+                        'provider' => $provider->code,
+                        'url' => $imageUrl,
+                        'error' => $fallbackError->getMessage()
+                    ]);
+                    return;
+                }
+            }
+            
+            // Providers อื่นๆ: fallback to HTTP client
             try {
                 $headers = [
                     'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Referer' => 'https://www.best-consortium.com/',
                     'Accept' => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
                 ];
                 
