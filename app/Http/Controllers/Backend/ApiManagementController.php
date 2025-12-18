@@ -2120,19 +2120,8 @@ class ApiManagementController extends Controller
         $imageUrl = $tourData[$imageField->api_field] ?? null;
         if (!$imageUrl) return;
 
-        // Best Consortium: บันทึก image URL โดยตรง (403 Forbidden block downloads)
-        if ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
-            $tourModel->image = $imageUrl;
-            $tourModel->image_check_change = 2; // ดึงจาก API
-            Log::info("Best Consortium image URL saved", [
-                'provider' => $provider->code,
-                'url' => $imageUrl
-            ]);
-            return;
-        }
-
         try {
-            // เพิ่ม headers สำหรับ providers อื่นๆ
+            // เพิ่ม headers เพื่อหลีกเลี่ยง 403 Forbidden (สำหรับ Best Consortium และ providers อื่นๆ)
             $headers = [
                 'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Referer' => 'https://www.best-consortium.com/',
@@ -2343,11 +2332,22 @@ class ApiManagementController extends Controller
                                     if ($applyHeaderFooter) {
                                         $filepdf = fopen(public_path($newPath), "r");
                                         $line_first = fgets($filepdf);
+                                        fclose($filepdf);
                                         preg_match_all('!\d+!', $line_first, $matches);
                                         $pdfversion = implode('.', $matches[0]);
                                         
-                                        if ($pdfversion > 1.6) {
+                                        // FPDI รองรับ PDF 1.4-1.7 ได้ ไม่ต้องเช็ค version แล้ว
+                                        try {
                                             $this->save_pdf($newPath, $provider);
+                                            Log::info("PDF header/footer applied (update)", [
+                                                'provider' => $provider->code,
+                                                'version' => $pdfversion
+                                            ]);
+                                        } catch (\Exception $e) {
+                                            Log::error("Failed to apply PDF header/footer (update)", [
+                                                'provider' => $provider->code,
+                                                'error' => $e->getMessage()
+                                            ]);
                                         }
                                     }
                                     
@@ -2357,37 +2357,68 @@ class ApiManagementController extends Controller
                             }
                         } else {
                             // ไฟล์ PDF ยังไม่มี - ดาวน์โหลดใหม่
-                            if (isset($headers['Last-Modified'])) {
-                                $lastModified = date("Y-m-d H:i:s", strtotime($headers['Last-Modified']));
-                                Storage::disk('public')->put($newPath, $response->body());
-                                
-                                // Check PDF version and apply header/footer
-                                $applyHeaderFooter = false;
-                                
-                                // ตรวจสอบว่าจะใช้ provider-specific หรือ global setting
-                                if ($provider->pdf_header_footer_enabled === 'on') {
+                            $lastModified = isset($headers['Last-Modified']) 
+                                ? date("Y-m-d H:i:s", strtotime($headers['Last-Modified'])) 
+                                : date("Y-m-d H:i:s");
+                            
+                            Storage::disk('public')->put($newPath, $response->body());
+                            
+                            // Check PDF version and apply header/footer
+                            $applyHeaderFooter = false;
+                            
+                            // ตรวจสอบว่าจะใช้ provider-specific หรือ global setting
+                            if ($provider->pdf_header_footer_enabled === 'on') {
+                                $applyHeaderFooter = true;
+                                Log::info("Using provider-specific PDF header/footer", [
+                                    'provider' => $provider->code,
+                                    'header' => $provider->pdf_header,
+                                    'footer' => $provider->pdf_footer
+                                ]);
+                            } else {
+                                $img_pdf = \App\Models\Backend\ImagePDFModel::first();
+                                if ($img_pdf && $img_pdf->status == 'on') {
                                     $applyHeaderFooter = true;
-                                } else {
-                                    $img_pdf = \App\Models\Backend\ImagePDFModel::first();
-                                    if ($img_pdf && $img_pdf->status == 'on') {
-                                        $applyHeaderFooter = true;
-                                    }
+                                    Log::info("Using global PDF header/footer", [
+                                        'provider' => $provider->code
+                                    ]);
                                 }
-                                
-                                if ($applyHeaderFooter) {
-                                    $filepdf = fopen(public_path($newPath), "r");
-                                    $line_first = fgets($filepdf);
-                                    preg_match_all('!\d+!', $line_first, $matches);
-                                    $pdfversion = implode('.', $matches[0]);
-                                    
-                                    if ($pdfversion > 1.6) {
-                                        $this->save_pdf($newPath, $provider);
-                                    }
-                                }
-                                
-                                $tourModel->pdf_file = $newPath;
-                                $tourModel->date_mod_pdf = $lastModified;
                             }
+                            
+                            if ($applyHeaderFooter) {
+                                $filepdf = fopen(public_path($newPath), "r");
+                                $line_first = fgets($filepdf);
+                                fclose($filepdf);
+                                preg_match_all('!\d+!', $line_first, $matches);
+                                $pdfversion = implode('.', $matches[0]);
+                                
+                                Log::info("PDF version check", [
+                                    'provider' => $provider->code,
+                                    'version' => $pdfversion,
+                                    'will_apply' => true
+                                ]);
+                                
+                                // FPDI รองรับ PDF 1.4-1.7 ได้ ไม่ต้องเช็ค version แล้ว
+                                try {
+                                    $this->save_pdf($newPath, $provider);
+                                    Log::info("PDF header/footer applied successfully", [
+                                        'provider' => $provider->code,
+                                        'path' => $newPath
+                                    ]);
+                                } catch (\Exception $e) {
+                                    Log::error("Failed to apply PDF header/footer", [
+                                        'provider' => $provider->code,
+                                        'error' => $e->getMessage()
+                                    ]);
+                                }
+                            } else {
+                                Log::info("PDF header/footer not enabled", [
+                                    'provider' => $provider->code,
+                                    'provider_enabled' => $provider->pdf_header_footer_enabled
+                                ]);
+                            }
+                            
+                            $tourModel->pdf_file = $newPath;
+                            $tourModel->date_mod_pdf = $lastModified;
                         }
                         
                         Log::info("PDF downloaded successfully", [
