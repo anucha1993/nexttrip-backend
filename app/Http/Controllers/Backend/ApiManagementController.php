@@ -780,6 +780,11 @@ class ApiManagementController extends Controller
         ]);
 
         try {
+            // Best Consortium: Special multi-country sync (เหมือน headcode)
+            if ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
+                return $this->performBestConsortiumSync($provider, $syncLog, $limit);
+            }
+            
             // Check if this is a multi-step API (like TTN Japan or GO365)
             $config = $provider->config ?? [];
             if ($provider->requires_multi_step || 
@@ -1224,6 +1229,227 @@ class ApiManagementController extends Controller
                 'tour_id' => $tourModel->id,
                 'error' => $e->getMessage()
             ]);
+        }
+    }
+
+    private function performBestConsortiumSync($provider, $syncLog, $limit = 0)
+    {
+        // Best Consortium: Multi-country sync (เหมือน headcode 100%)
+        // Step 1: ดึงรายชื่อประเทศทั้งหมด
+        // Step 2: วนลูปแต่ละประเทศดึง tours
+        
+        $headers = [];
+        if (!empty($provider->headers)) {
+            $headers = is_string($provider->headers) ? json_decode($provider->headers, true) : $provider->headers;
+            $headers = $headers ?? [];
+        }
+        
+        try {
+            // Step 1: Get all countries
+            $countriesUrl = 'https://api.best-consortium.com/v1/series/country';
+            
+            Log::info('Best Consortium: Fetching countries', [
+                'url' => $countriesUrl
+            ]);
+            
+            $response = Http::withHeaders($headers)->timeout(60)->get($countriesUrl);
+            
+            if (!$response->successful()) {
+                throw new \Exception('Failed to fetch countries: ' . $response->status());
+            }
+            
+            $countries = $response->json();
+            
+            if (!is_array($countries) || count($countries) === 0) {
+                throw new \Exception('No countries found in API response');
+            }
+            
+            Log::info('Best Consortium: Countries fetched', [
+                'country_count' => count($countries),
+                'countries' => array_map(function($c) {
+                    return ['id' => $c['id'] ?? 'N/A', 'name' => $c['nameEng'] ?? 'N/A'];
+                }, $countries)
+            ]);
+            
+            // Step 2: Loop through each country and fetch tours
+            $createdTours = 0;
+            $duplicatedTours = 0;
+            $errorCount = 0;
+            $errors = [];
+            $totalRecords = 0;
+            $toursToProcess = [];
+            
+            foreach ($countries as $country) {
+                $countryId = $country['id'] ?? null;
+                $countryName = $country['nameEng'] ?? 'Unknown';
+                
+                if (!$countryId) {
+                    Log::warning('Best Consortium: Country missing ID', ['country' => $country]);
+                    continue;
+                }
+                
+                try {
+                    $toursUrl = "https://tour-api.bestinternational.com/api/tour-programs/v2/{$countryId}";
+                    
+                    Log::info('Best Consortium: Fetching tours for country', [
+                        'country_id' => $countryId,
+                        'country_name' => $countryName,
+                        'url' => $toursUrl
+                    ]);
+                    
+                    // Handle rate limiting (เหมือน headcode)
+                    $response = Http::withHeaders($headers)->timeout(60)->get($toursUrl);
+                    
+                    $remaining = $response->header('X-RateLimit-Remaining');
+                    $resetTime = $response->header('X-RateLimit-Reset');
+                    
+                    if ($remaining !== null && $resetTime !== null) {
+                        if ($remaining == "" || $remaining <= 0) {
+                            if (!is_numeric($resetTime)) {
+                                $resetTime = time() + 60;
+                            }
+                            $waitTime = max(1, $resetTime - time());
+                            Log::info('Best Consortium: Rate limit reached, sleeping', ['wait_time' => $waitTime]);
+                            sleep($waitTime);
+                            $response = Http::withHeaders($headers)->timeout(60)->get($toursUrl);
+                        }
+                    } elseif ($response->status() == 429 || $response->status() == 404) {
+                        Log::warning('Best Consortium: Rate limit or not found', [
+                            'status' => $response->status(),
+                            'country_id' => $countryId
+                        ]);
+                        sleep(60);
+                        $response = Http::withHeaders($headers)->timeout(60)->get($toursUrl);
+                    }
+                    
+                    if (!$response->successful()) {
+                        $errorCount++;
+                        $errors[] = "Country {$countryName} ({$countryId}): Status {$response->status()}";
+                        Log::warning('Best Consortium: Failed to fetch country tours', [
+                            'country_id' => $countryId,
+                            'country_name' => $countryName,
+                            'status' => $response->status()
+                        ]);
+                        continue;
+                    }
+                    
+                    $tours = $response->json();
+                    
+                    if (is_array($tours) && count($tours) > 0) {
+                        Log::info('Best Consortium: Tours fetched for country', [
+                            'country_id' => $countryId,
+                            'country_name' => $countryName,
+                            'tour_count' => count($tours)
+                        ]);
+                        
+                        // เก็บ country info ไว้ใน tour data
+                        foreach ($tours as &$tour) {
+                            $tour['_country_id'] = $countryId;
+                            $tour['_country_name_eng'] = $countryName;
+                            $toursToProcess[] = $tour;
+                        }
+                        
+                        $totalRecords += count($tours);
+                    }
+                    
+                } catch (\Exception $e) {
+                    $errorCount++;
+                    $errors[] = "Country {$countryName}: {$e->getMessage()}";
+                    Log::error('Best Consortium: Error fetching country tours', [
+                        'country_id' => $countryId,
+                        'country_name' => $countryName,
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+            
+            // Apply limit if specified
+            if ($limit > 0 && count($toursToProcess) > $limit) {
+                $toursToProcess = array_slice($toursToProcess, 0, $limit);
+                Log::info('Best Consortium: Applied limit to tours', [
+                    'original_count' => $totalRecords,
+                    'limited_count' => count($toursToProcess),
+                    'limit' => $limit
+                ]);
+            }
+            
+            // Process all collected tours
+            Log::info('Best Consortium: Starting to process tours', [
+                'total_tours' => count($toursToProcess)
+            ]);
+            
+            foreach ($toursToProcess as $index => $tourData) {
+                try {
+                    $currentIndex = $index + 1;
+                    Log::info("Processing tour {$currentIndex}/" . count($toursToProcess), [
+                        'provider' => $provider->code,
+                        'tour_index' => $currentIndex
+                    ]);
+                    
+                    $result = $this->processTourData($provider, $tourData, $syncLog);
+                    
+                    if ($result['action'] === 'created') {
+                        $createdTours++;
+                    } elseif ($result['action'] === 'updated') {
+                        $createdTours++; // Count updates as processed
+                    } elseif ($result['action'] === 'duplicated') {
+                        $duplicatedTours++;
+                    }
+                    
+                } catch (\Exception $e) {
+                    $errorCount++;
+                    $errors[] = $e->getMessage();
+                    Log::error('Best Consortium: Error processing tour', [
+                        'tour_index' => $index + 1,
+                        'tour_code' => $tourData['code'] ?? 'N/A',
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+            
+            // Update sync log
+            $syncLog->update([
+                'status' => 'completed',
+                'completed_at' => now(),
+                'total_records' => count($toursToProcess),
+                'created_tours' => $createdTours,
+                'duplicated_tours' => $duplicatedTours,
+                'error_count' => $errorCount,
+                'error_message' => $errorCount > 0 ? implode('; ', array_slice($errors, 0, 5)) : null,
+                'summary' => [
+                    'total_countries' => count($countries),
+                    'total_records' => count($toursToProcess),
+                    'created_tours' => $createdTours,
+                    'duplicated_tours' => $duplicatedTours,
+                    'error_count' => $errorCount,
+                    'errors' => array_slice($errors, 0, 10)
+                ]
+            ]);
+            
+            return [
+                'log_id' => $syncLog->id,
+                'summary' => [
+                    'total_countries' => count($countries),
+                    'total_records' => count($toursToProcess),
+                    'created_tours' => $createdTours,
+                    'duplicated_tours' => $duplicatedTours,
+                    'error_count' => $errorCount
+                ]
+            ];
+            
+        } catch (\Exception $e) {
+            Log::error('Best Consortium sync error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            $syncLog->update([
+                'status' => 'failed',
+                'completed_at' => now(),
+                'error_message' => $e->getMessage()
+            ]);
+            
+            throw $e;
         }
     }
 
