@@ -1313,16 +1313,26 @@ class ApiManagementController extends Controller
                             sleep($waitTime);
                             $response = Http::withHeaders($headers)->timeout(60)->get($toursUrl);
                         }
-                    } elseif ($response->status() == 429 || $response->status() == 404) {
-                        Log::warning('Best Consortium: Rate limit or not found', [
-                            'status' => $response->status(),
+                    } elseif ($response->status() == 429) {
+                        // Rate limit - retry after sleep
+                        Log::warning('Best Consortium: Rate limit reached (429)', [
                             'country_id' => $countryId
                         ]);
                         sleep(60);
                         $response = Http::withHeaders($headers)->timeout(60)->get($toursUrl);
                     }
                     
+                    // 404 = ไม่มี tours ในประเทศนี้ (ไม่ใช่ error ปกติ)
+                    if ($response->status() == 404) {
+                        Log::info('Best Consortium: No tours found for country (404)', [
+                            'country_id' => $countryId,
+                            'country_name' => $countryName
+                        ]);
+                        continue; // ข้ามประเทศนี้ไป ไม่นับเป็น error
+                    }
+                    
                     if (!$response->successful()) {
+                        // Error อื่นๆ (ไม่ใช่ 404) ถึงจะนับเป็น error
                         $errorCount++;
                         $errors[] = "Country {$countryName} ({$countryId}): Status {$response->status()}";
                         Log::warning('Best Consortium: Failed to fetch country tours', [
