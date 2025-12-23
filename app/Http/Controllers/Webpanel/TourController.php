@@ -314,6 +314,12 @@ class TourController extends Controller
             $province_select = json_decode($row->province_id,true);
             $district_select = json_decode($row->district_id,true);
 
+            // Validate decoded values (fix for Best Consortium API)
+            $country_select = is_array($country_select) ? $country_select : [];
+            $city_select = is_array($city_select) ? $city_select : [];
+            $province_select = is_array($province_select) ? $province_select : [];
+            $district_select = is_array($district_select) ? $district_select : [];
+
             $country_sel = CountryModel::whereIn('id',$country_select)->get();
             $city_sel = CityModel::whereIn('id',$city_select)->get();
             $province_sel = ProvinceModel::whereIn('id',$province_select)->get();

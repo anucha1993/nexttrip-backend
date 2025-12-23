@@ -991,6 +991,7 @@ class ApiManagementController extends Controller
         
         $createdTours = 0;
         $duplicatedTours = 0;
+        $skippedTours = 0;
         $errorCount = 0;
         $errors = [];
         $processedCount = 0;
@@ -1077,8 +1078,12 @@ class ApiManagementController extends Controller
                             
                             // Process periods if period URL pattern exists
                             if (!empty($config['period_url_pattern'])) {
-                                $this->processPeriodsFromConfig($provider, $result['tour_model'], $programData['P_ID']);
+                                // Use program's P_ID, not programData's
+                                $programIdForPeriod = $program['P_ID'] ?? $programData['P_ID'];
+                                $this->processPeriodsFromConfig($provider, $result['tour_model'], $programIdForPeriod);
                             }
+                        } elseif ($result['action'] === 'skipped') {
+                            $skippedTours++;
                         } elseif ($result['action'] === 'duplicated') {
                             $duplicatedTours++;
                         }
@@ -1111,6 +1116,7 @@ class ApiManagementController extends Controller
                 'total_records' => $processedCount,
                 'created_tours' => $createdTours,
                 'duplicated_tours' => $duplicatedTours,
+                'skipped_tours' => $skippedTours,
                 'error_count' => $errorCount,
                 'errors' => array_slice($errors, 0, 10)
             ]
@@ -1122,6 +1128,7 @@ class ApiManagementController extends Controller
                 'total_records' => $processedCount,
                 'created_tours' => $createdTours,
                 'duplicated_tours' => $duplicatedTours,
+                'skipped_tours' => $skippedTours,
                 'error_count' => $errorCount
             ]
         ];
@@ -1143,24 +1150,56 @@ class ApiManagementController extends Controller
             
             $periodUrl = str_replace('{id}', $programId, $periodUrlPattern);
             
+            Log::info('Calling period endpoint', [
+                'provider' => $provider->code,
+                'program_id' => $programId,
+                'period_url' => $periodUrl
+            ]);
+            
             $response = Http::withHeaders($headers)->timeout(60)->get($periodUrl);
+            
+            Log::info('Period API response', [
+                'provider' => $provider->code,
+                'status' => $response->status(),
+                'successful' => $response->successful(),
+                'body_length' => strlen($response->body())
+            ]);
             
             if (!$response->successful()) {
                 Log::warning('Failed to get periods', [
                     'provider' => $provider->name,
-                    'program_id' => $programId
+                    'program_id' => $programId,
+                    'status' => $response->status()
                 ]);
                 return;
             }
             
             $periodsData = $response->json();
             
-            if (count($periodsData) > 0) {
-                foreach ($periodsData as $periodData) {
-                    if (isset($periodData['Price']) && is_array($periodData['Price'])) {
-                        foreach ($periodData['Price'] as $priceData) {
-                            // Create period using database mappings
-                            $this->createPeriodFromArray($provider, array_merge($periodData, $priceData), $tourModel);
+            Log::info('Period data received', [
+                'provider' => $provider->code,
+                'data_type' => gettype($periodsData),
+                'is_array' => is_array($periodsData),
+                'count' => is_array($periodsData) ? count($periodsData) : 0
+            ]);
+            
+            // TTN Japan: Process periods with Price array (เหมือน headcode)
+            if ($provider->code === 'ttn' || $provider->code === 'ttn_japan') {
+                Log::info('Processing TTN Japan periods', [
+                    'provider' => $provider->code,
+                    'tour_id' => $tourModel->id,
+                    'periods_count' => is_array($periodsData) ? count($periodsData) : 0
+                ]);
+                $this->processTTNJapanPeriods($provider, $tourModel, $periodsData);
+            } else {
+                // Generic period processing for other APIs
+                if (count($periodsData) > 0) {
+                    foreach ($periodsData as $periodData) {
+                        if (isset($periodData['Price']) && is_array($periodData['Price'])) {
+                            foreach ($periodData['Price'] as $priceData) {
+                                // Create period using database mappings
+                                $this->createPeriodFromArray($provider, array_merge($periodData, $priceData), $tourModel);
+                            }
                         }
                     }
                 }
@@ -1170,6 +1209,81 @@ class ApiManagementController extends Controller
             Log::error('Error processing periods from config', [
                 'provider' => $provider->name,
                 'program_id' => $programId,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
+
+    private function processTTNJapanPeriods($provider, $tourModel, $periodsData)
+    {
+        // TTN Japan period logic (เหมือน headcode 100%)
+        try {
+            if (!is_array($periodsData) || count($periodsData) === 0) {
+                return;
+            }
+
+            foreach ($periodsData as $periodGroup) {
+                if (!isset($periodGroup['Price']) || !is_array($periodGroup['Price'])) {
+                    continue;
+                }
+
+                foreach ($periodGroup['Price'] as $priceData) {
+                    // ตรวจสอบว่ามี period นี้อยู่แล้วหรือไม่
+                    $periodModel = \App\Models\Backend\TourPeriodModel::where([
+                        'tour_id' => $tourModel->id,
+                        'period_api_id' => $periodGroup['P_ID'],
+                        'api_type' => 'ttn'
+                    ])
+                    ->whereNull('deleted_at')
+                    ->first();
+
+                    if (!$periodModel) {
+                        $periodModel = new \App\Models\Backend\TourPeriodModel();
+                    }
+
+                    // ราคา (เหมือน headcode)
+                    $price1 = $priceData['P_ADULT_PRICE'] ?? 0; // ผู้ใหญ่พักคู่
+                    $price2 = $priceData['P_SINGLE_PRICE'] ?? 0; // ผู้ใหญ่พักเดี่ยว
+
+                    $periodModel->tour_id = $tourModel->id;
+                    $periodModel->period_api_id = $periodGroup['P_ID'];
+                    $periodModel->group_date = date('mY', strtotime($periodGroup['P_DUE_START']));
+                    $periodModel->start_date = $periodGroup['P_DUE_START'];
+                    $periodModel->end_date = $periodGroup['P_DUE_END'];
+                    $periodModel->day = $tourModel->day; // เอาจาก tour หลัก
+                    $periodModel->night = $tourModel->night; // เอาจาก tour หลัก
+                    $periodModel->price1 = $price1;
+                    $periodModel->price2 = $price2;
+                    $periodModel->group = $priceData['P_VOLUME'] ?? 0;
+                    $periodModel->count = $priceData['P_AVAILABLE'] ?? 0;
+                    $periodModel->status_display = 'on';
+
+                    // Status period (เหมือน headcode)
+                    if ($priceData['P_AVAILABLE'] === 'Open') {
+                        $periodModel->status_period = 1;
+                    } elseif ($priceData['P_AVAILABLE'] === 'ChangePrice') {
+                        $periodModel->status_period = 3;
+                    } else {
+                        $periodModel->status_period = 1; // default
+                    }
+
+                    $periodModel->api_type = 'ttn';
+                    $periodModel->save();
+
+                    Log::info('TTN Japan period created/updated', [
+                        'tour_id' => $tourModel->id,
+                        'period_id' => $periodModel->id,
+                        'period_api_id' => $periodGroup['P_ID'],
+                        'start_date' => $periodModel->start_date,
+                        'price1' => $price1,
+                        'price2' => $price2
+                    ]);
+                }
+            }
+
+        } catch (\Exception $e) {
+            Log::error('Error processing TTN Japan periods', [
+                'tour_id' => $tourModel->id,
                 'error' => $e->getMessage()
             ]);
         }
@@ -1682,6 +1796,21 @@ class ApiManagementController extends Controller
         
         // Process periods if exists
         $this->processPeriods($provider, $tourData, $tourModel);
+        
+        // TTN Japan/All: ถ้าไม่มี periods ให้ลบ tour (ไม่ sync tours ที่ไม่มี periods)
+        if (($provider->code === 'ttn_japan' || $provider->code === 'ttn_all')) {
+            $periodCount = $tourModel->period()->count();
+            if ($periodCount === 0) {
+                Log::info('TTN Japan: Deleting tour without periods', [
+                    'provider' => $provider->code,
+                    'tour_id' => $tourModel->id,
+                    'tour_code' => $tourModel->code,
+                    'api_id' => $tourModel->api_id
+                ]);
+                $tourModel->delete();
+                return ['action' => 'skipped', 'reason' => 'no_periods'];
+            }
+        }
         
         // Update tour price based on periods
         $this->updateTourPrice($tourModel);
@@ -2570,17 +2699,19 @@ class ApiManagementController extends Controller
         if (!$pdfUrl) return;
 
         try {
-            // TTN Japan: บันทึก PDF link โดยตรง (Google Drive link)
-            if ($provider->code === 'ttn_japan' || $provider->code === 'ttn_all') {
+            // TTN Japan/All: PDF เป็น Google Drive link → บันทึก URL โดยตรง 
+            // (Google Drive ไม่อนุญาต direct download ต้องใช้ API หรือ OAuth)
+            if (($provider->code === 'ttn_japan' || $provider->code === 'ttn_all') && 
+                (strpos($pdfUrl, 'drive.google.com') !== false || strpos($pdfUrl, 'docs.google.com') !== false)) {
                 $tourModel->pdf_file = $pdfUrl;
-                Log::info("TTN PDF link saved", [
+                Log::info("TTN PDF: Saved Google Drive URL (cannot direct download)", [
                     'provider' => $provider->code,
                     'url' => $pdfUrl
                 ]);
                 return;
             }
             
-            // GO365 และ API อื่นๆ: Download PDF file
+            // Other APIs: Download PDF + insert header/footer
             $headers = get_headers($pdfUrl, 1);
             
             $response = Http::get($pdfUrl);
@@ -2856,21 +2987,24 @@ class ApiManagementController extends Controller
         }
         
         // Strategy 2: Check for direct period fields in tour data
-        $directPeriodFields = [];
-        foreach ($periodMappings as $mapping) {
-            if ($mapping->local_field !== 'periods' && isset($tourData[$mapping->api_field])) {
-                $directPeriodFields[] = $mapping->api_field;
+        // BUT: Skip this for TTN Japan/All - they ALWAYS need period endpoint call
+        if ($provider->code !== 'ttn_japan' && $provider->code !== 'ttn_all') {
+            $directPeriodFields = [];
+            foreach ($periodMappings as $mapping) {
+                if ($mapping->local_field !== 'periods' && isset($tourData[$mapping->api_field])) {
+                    $directPeriodFields[] = $mapping->api_field;
+                }
             }
-        }
-        
-        if (!empty($directPeriodFields)) {
-            Log::info('Found direct period fields in tour data', [
-                'provider' => $provider->code,
-                'tour_id' => $tourModel->id,
-                'found_fields' => $directPeriodFields
-            ]);
-            $this->createPeriodFromTourData($provider, $tourData, $tourModel);
-            return;
+            
+            if (!empty($directPeriodFields)) {
+                Log::info('Found direct period fields in tour data', [
+                    'provider' => $provider->code,
+                    'tour_id' => $tourModel->id,
+                    'found_fields' => $directPeriodFields
+                ]);
+                $this->createPeriodFromTourData($provider, $tourData, $tourModel);
+                return;
+            }
         }
         
         // Strategy 2.5: For providers like GO365, check common period fields even without mappings
@@ -2893,7 +3027,19 @@ class ApiManagementController extends Controller
             return;
         }
         
-        // Strategy 3: Create default period if no period data found
+        // Strategy 3: For multi-step APIs, call period endpoint (TTN Japan, GO365)
+        $config = $provider->config ?? [];
+        if (!empty($config['period_url_pattern'])) {
+            Log::info('Multi-step API: Calling period endpoint', [
+                'provider' => $provider->code,
+                'tour_id' => $tourModel->id,
+                'tour_api_id' => $tourModel->api_id
+            ]);
+            $this->processPeriodsFromConfig($provider, $tourModel, $tourModel->api_id);
+            return;
+        }
+        
+        // Strategy 4: Create default period if no period data found
         Log::info('No period data found, creating default period', [
             'provider' => $provider->code,
             'tour_id' => $tourModel->id
