@@ -389,6 +389,17 @@ class ApiManagementController extends Controller
         
         try {
             $headers = $provider->headers ?? [];
+            
+            // Special handling for Super Holiday (multi-category API)
+            if ($provider->code === 'superbholiday' || $provider->code === 'superb_holiday') {
+                return $this->testSuperHolidayConnection($provider, $startTime, $headers);
+            }
+            
+            // Special handling for Best Consortium (multi-country API)
+            if ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
+                return $this->testBestConsortiumConnection($provider, $startTime, $headers);
+            }
+            
             $response = Http::withHeaders($headers)->timeout(30)->get($provider->url);
             
             $endTime = microtime(true);
@@ -699,6 +710,151 @@ class ApiManagementController extends Controller
         return null; // Not a nested field
     }
 
+    private function testSuperHolidayConnection($provider, $startTime, $headers)
+    {
+        try {
+            // Super Holiday: Test first 3 category IDs
+            $testCategoryIds = [21, 29, 28];
+            $totalRecords = 0;
+            $totalPeriods = 0;
+            $responseSize = 0;
+            
+            foreach ($testCategoryIds as $catId) {
+                $url = $provider->url . '?id=' . $catId;
+                
+                try {
+                    $response = Http::withHeaders($headers)->timeout(10)->get($url);
+                    
+                    if ($response->successful()) {
+                        $data = $response->json();
+                        $responseSize += strlen($response->body());
+                        
+                        if (is_array($data)) {
+                            $totalRecords += count($data);
+                            $totalPeriods += count($data); // Super Holiday: 1 tour = 1 period
+                        }
+                    }
+                } catch (\Exception $e) {
+                    Log::warning("Super Holiday test: Category {$catId} failed", [
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+            
+            $endTime = microtime(true);
+            $responseTime = round(($endTime - $startTime), 3);
+            
+            $message = "Connection successful! Found {$totalRecords} records with {$totalPeriods} periods from 3 sample categories.";
+            
+            ApiTestResultModel::create([
+                'api_provider_id' => $provider->id,
+                'test_type' => 'connection',
+                'status' => 'success',
+                'response_message' => $message,
+                'response_time' => $responseTime,
+                'response_size' => $responseSize,
+                'tested_at' => now()
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'status' => 200,
+                'response_time' => $responseTime,
+                'response_size' => $responseSize,
+                'record_count' => $totalRecords,
+                'period_count' => $totalPeriods,
+                'data' => true,
+                'message' => $message,
+                'provider_code' => $provider->code
+            ]);
+            
+        } catch (\Exception $e) {
+            $endTime = microtime(true);
+            $responseTime = round(($endTime - $startTime), 3);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Connection error: ' . $e->getMessage(),
+                'response_time' => $responseTime
+            ], 500);
+        }
+    }
+
+    private function testBestConsortiumConnection($provider, $startTime, $headers)
+    {
+        try {
+            // Best Consortium: Test countries endpoint
+            $countriesUrl = 'https://api.best-consortium.com/v1/series/country';
+            $response = Http::withHeaders($headers)->timeout(10)->get($countriesUrl);
+            
+            $endTime = microtime(true);
+            $responseTime = round(($endTime - $startTime), 3);
+            
+            if (!$response->successful()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Connection failed: ' . $response->status(),
+                    'response_time' => $responseTime
+                ], 500);
+            }
+            
+            $countries = $response->json();
+            $countryCount = is_array($countries) ? count($countries) : 0;
+            
+            // Test first country for tours
+            $totalRecords = 0;
+            $totalPeriods = 0;
+            
+            if ($countryCount > 0 && isset($countries[0]['countryId'])) {
+                $testCountryId = $countries[0]['countryId'];
+                $toursUrl = "https://api.best-consortium.com/api/tour-programs/v2/{$testCountryId}";
+                
+                $toursResponse = Http::withHeaders($headers)->timeout(10)->get($toursUrl);
+                
+                if ($toursResponse->successful()) {
+                    $tours = $toursResponse->json();
+                    $totalRecords = is_array($tours) ? count($tours) : 0;
+                    // Best Consortium: Each tour has ~6 periods
+                    $totalPeriods = $totalRecords * 6;
+                }
+            }
+            
+            $message = "Connection successful! Found {$countryCount} countries with estimated {$totalRecords} tours and {$totalPeriods} periods.";
+            
+            ApiTestResultModel::create([
+                'api_provider_id' => $provider->id,
+                'test_type' => 'connection',
+                'status' => 'success',
+                'response_message' => $message,
+                'response_time' => $responseTime,
+                'response_size' => strlen($response->body()),
+                'tested_at' => now()
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'status' => 200,
+                'response_time' => $responseTime,
+                'response_size' => strlen($response->body()),
+                'record_count' => $totalRecords,
+                'period_count' => $totalPeriods,
+                'data' => true,
+                'message' => $message,
+                'provider_code' => $provider->code
+            ]);
+            
+        } catch (\Exception $e) {
+            $endTime = microtime(true);
+            $responseTime = round(($endTime - $startTime), 3);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Connection error: ' . $e->getMessage(),
+                'response_time' => $responseTime
+            ], 500);
+        }
+    }
+
     public function syncManual($id, $limit = null)
     {
         $provider = ApiProviderModel::with(['fieldMappings', 'conditions'])->findOrFail($id);
@@ -783,6 +939,11 @@ class ApiManagementController extends Controller
             // Best Consortium: Special multi-country sync (เหมือน headcode)
             if ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
                 return $this->performBestConsortiumSync($provider, $syncLog, $limit);
+            }
+            
+            // Super Holiday: Special multi-category sync (เหมือน headcode)
+            if ($provider->code === 'superbholiday' || $provider->code === 'superb_holiday') {
+                return $this->performSuperHolidaySync($provider, $syncLog, $limit);
             }
             
             // Check if this is a multi-step API (like TTN Japan or GO365)
@@ -1577,6 +1738,150 @@ class ApiManagementController extends Controller
         }
     }
 
+    private function performSuperHolidaySync($provider, $syncLog, $limit = 0)
+    {
+        // Super Holiday: Loop through hardcoded category IDs (เหมือน headcode 100%)
+        // ตาม headcode: [21,29,28,23,25,24,18,2,3,17,1,19]
+        
+        $categoryIds = [21, 29, 28, 23, 25, 24, 18, 2, 3, 17, 1, 19];
+        
+        Log::info('Super Holiday: Starting multi-category sync', [
+            'provider' => $provider->name,
+            'total_categories' => count($categoryIds),
+            'category_ids' => $categoryIds,
+            'limit' => $limit
+        ]);
+        
+        $headers = [];
+        if (!empty($provider->headers)) {
+            $headers = is_string($provider->headers) ? json_decode($provider->headers, true) : $provider->headers;
+            $headers = $headers ?? [];
+        }
+        
+        $allTours = [];
+        $createdTours = 0;
+        $duplicatedTours = 0;
+        $errorCount = 0;
+        $errors = [];
+        
+        try {
+            // Loop through each category ID
+            foreach ($categoryIds as $catId) {
+                $url = $provider->url . '?id=' . $catId;
+                
+                Log::info("Super Holiday: Fetching category {$catId}", [
+                    'url' => $url
+                ]);
+                
+                try {
+                    $response = Http::withHeaders($headers)->timeout(120)->get($url);
+                    
+                    if (!$response->successful()) {
+                        Log::warning("Super Holiday: Category {$catId} failed", [
+                            'status' => $response->status()
+                        ]);
+                        continue;
+                    }
+                    
+                    $data = $response->json();
+                    
+                    if (!empty($data) && is_array($data)) {
+                        Log::info("Super Holiday: Category {$catId} returned tours", [
+                            'count' => count($data)
+                        ]);
+                        $allTours = array_merge($allTours, $data);
+                    }
+                    
+                } catch (\Exception $e) {
+                    Log::error("Super Holiday: Error fetching category {$catId}", [
+                        'error' => $e->getMessage()
+                    ]);
+                    continue;
+                }
+            }
+            
+            Log::info('Super Holiday: All categories fetched', [
+                'total_tours' => count($allTours)
+            ]);
+            
+            // Apply limit if specified
+            if ($limit > 0 && count($allTours) > $limit) {
+                $allTours = array_slice($allTours, 0, $limit);
+                Log::info('Super Holiday: Applied limit', [
+                    'limited_count' => count($allTours),
+                    'limit' => $limit
+                ]);
+            }
+            
+            // Process tours
+            foreach ($allTours as $index => $tourData) {
+                try {
+                    $result = $this->processTourData($provider, $tourData, $syncLog);
+                    
+                    if ($result['action'] === 'created') {
+                        $createdTours++;
+                    } elseif ($result['action'] === 'updated') {
+                        $createdTours++;
+                    } elseif ($result['action'] === 'duplicated') {
+                        $duplicatedTours++;
+                    }
+                    
+                } catch (\Exception $e) {
+                    $errorCount++;
+                    $errors[] = $e->getMessage();
+                    Log::error('Super Holiday: Error processing tour', [
+                        'tour_index' => $index + 1,
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+            
+            // Update sync log
+            $syncLog->update([
+                'status' => 'completed',
+                'completed_at' => now(),
+                'total_records' => count($allTours),
+                'created_tours' => $createdTours,
+                'duplicated_tours' => $duplicatedTours,
+                'error_count' => $errorCount,
+                'error_message' => $errorCount > 0 ? implode('; ', array_slice($errors, 0, 5)) : null,
+                'summary' => [
+                    'total_categories' => count($categoryIds),
+                    'total_records' => count($allTours),
+                    'created_tours' => $createdTours,
+                    'duplicated_tours' => $duplicatedTours,
+                    'error_count' => $errorCount,
+                    'errors' => array_slice($errors, 0, 10)
+                ]
+            ]);
+            
+            return [
+                'log_id' => $syncLog->id,
+                'summary' => [
+                    'total_categories' => count($categoryIds),
+                    'total_records' => count($allTours),
+                    'created_tours' => $createdTours,
+                    'duplicated_tours' => $duplicatedTours,
+                    'error_count' => $errorCount
+                ]
+            ];
+            
+        } catch (\Exception $e) {
+            Log::error('Super Holiday sync error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            $syncLog->update([
+                'status' => 'failed',
+                'completed_at' => now(),
+                'error_message' => $e->getMessage()
+            ]);
+            
+            throw $e;
+        }
+    }
+
     private function processTourData($provider, $tourData, $syncLog)
     {
         // ตรวจสอบ data type ก่อน
@@ -1825,12 +2130,35 @@ class ApiManagementController extends Controller
         foreach ($mappings as $mapping) {
             $apiValue = $tourData[$mapping->api_field] ?? null;
             
+            // Skip pdf_file mapping - let processPDF handle it (supports nested fields)
+            if ($mapping->local_field === 'pdf_file') {
+                continue;
+            }
+            
             // Handle static value mappings (where api_field is empty)
             if (empty($mapping->api_field) && !empty($mapping->transformation_rules)) {
                 $rules = is_string($mapping->transformation_rules) ? json_decode($mapping->transformation_rules, true) : $mapping->transformation_rules;
                 if ($rules && isset($rules['static_value'])) {
                     $tourModel->{$mapping->local_field} = $rules['static_value'];
                     continue;
+                }
+            }
+            
+            // Handle nested fields (e.g., tour_file.file_pdf for GO365)
+            if (!empty($mapping->transformation_rules)) {
+                $rules = is_string($mapping->transformation_rules) ? json_decode($mapping->transformation_rules, true) : $mapping->transformation_rules;
+                if (isset($rules['nested_field'])) {
+                    // Extract nested value from array/object
+                    if (is_array($apiValue) && isset($apiValue[$rules['nested_field']])) {
+                        $apiValue = $apiValue[$rules['nested_field']];
+                        Log::info('Extracted nested field', [
+                            'provider' => $provider->code,
+                            'local_field' => $mapping->local_field,
+                            'api_field' => $mapping->api_field,
+                            'nested_field' => $rules['nested_field'],
+                            'value' => $apiValue
+                        ]);
+                    }
                 }
             }
             
@@ -1998,7 +2326,8 @@ class ApiManagementController extends Controller
                 // Convert to string, handle arrays by taking first element or converting to string
                 if (is_array($value)) {
                     if (count($value) > 0) {
-                        $firstElement = $value[0];
+                        // Get first element (works for both indexed and associative arrays)
+                        $firstElement = reset($value);
                         // If first element is also an array/object, convert to JSON
                         if (is_array($firstElement) || is_object($firstElement)) {
                             return json_encode($firstElement);
@@ -2532,6 +2861,11 @@ class ApiManagementController extends Controller
                 'Accept' => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
             ];
             
+            // Tour Factory: ต้องใส่ Referer header (เหมือน headcode)
+            if ($provider->code === 'tourfactory' || $provider->code === 'tour_factory') {
+                $headers['Referer'] = 'https://booking.tourfactory.co.th/';
+            }
+            
             // Check HTTP response first
             $response = Http::withOptions(['verify' => false])
                 ->withHeaders($headers)
@@ -2697,6 +3031,32 @@ class ApiManagementController extends Controller
         
         $pdfUrl = $tourData[$pdfField->api_field] ?? null;
         if (!$pdfUrl) return;
+        
+        // Handle nested fields (same logic as mapTourFieldsFromConfig)
+        if (!empty($pdfField->transformation_rules)) {
+            $rules = is_string($pdfField->transformation_rules) ? json_decode($pdfField->transformation_rules, true) : $pdfField->transformation_rules;
+            if (isset($rules['nested_field'])) {
+                // Extract nested value from array/object
+                if (is_array($pdfUrl) && isset($pdfUrl[$rules['nested_field']])) {
+                    $pdfUrl = $pdfUrl[$rules['nested_field']];
+                    Log::info('Extracted nested PDF field', [
+                        'provider' => $provider->code,
+                        'api_field' => $pdfField->api_field,
+                        'nested_field' => $rules['nested_field'],
+                        'pdf_url' => $pdfUrl
+                    ]);
+                }
+            }
+        }
+        
+        // After extraction, pdfUrl must be a string
+        if (!is_string($pdfUrl) || empty($pdfUrl)) {
+            Log::warning("PDF URL is not a valid string", [
+                'provider' => $provider->code,
+                'pdf_value' => $pdfUrl
+            ]);
+            return;
+        }
 
         try {
             // TTN Japan/All: PDF เป็น Google Drive link → บันทึก URL โดยตรง 
@@ -2714,7 +3074,20 @@ class ApiManagementController extends Controller
             // Other APIs: Download PDF + insert header/footer
             $headers = get_headers($pdfUrl, 1);
             
-            $response = Http::get($pdfUrl);
+            // Tour Factory: ต้องใส่ Referer header (เหมือน headcode)
+            $httpOptions = [];
+            if ($provider->code === 'tourfactory' || $provider->code === 'tour_factory') {
+                $httpOptions = [
+                    'headers' => [
+                        'Referer' => 'https://booking.tourfactory.co.th/',
+                        'User-Agent' => 'Mozilla/5.0',
+                        'Accept' => 'application/pdf'
+                    ]
+                ];
+                $response = Http::withOptions($httpOptions)->get($pdfUrl);
+            } else {
+                $response = Http::get($pdfUrl);
+            }
             
             if ($response->successful()) {
                 
@@ -2954,36 +3327,46 @@ class ApiManagementController extends Controller
         }
         
         // Strategy 1: Check for separate periods array field
-        $periodsArrayField = $periodMappings->where('local_field', 'periods')->first();
-        if ($periodsArrayField && isset($tourData[$periodsArrayField->api_field])) {
-            $periodsArray = $tourData[$periodsArrayField->api_field];
-            if (is_array($periodsArray) && !empty($periodsArray)) {
-                Log::info('Found periods array, creating multiple periods', [
-                    'provider' => $provider->code,
-                    'tour_id' => $tourModel->id,
-                    'periods_count' => count($periodsArray)
-                ]);
-                
-                // เก็บ max discount percent สำหรับ Zego
-                $maxDiscountPercents = [];
-                
-                foreach ($periodsArray as $periodData) {
-                    $period = $this->createPeriodFromArray($provider, $periodData, $tourModel, $tourData);
-                    
-                    // Zego-specific: เก็บ discount percent
-                    if ($provider->code === 'zego' && $period) {
-                        $discountPercent = $this->calculateZegoPeriodDiscount($period);
-                        $maxDiscountPercents[] = $discountPercent;
-                    }
-                }
-                
-                // Zego-specific: คำนวณ promotion หลังจากสร้าง periods ทั้งหมดแล้ว
-                if ($provider->code === 'zego' && !empty($maxDiscountPercents)) {
-                    $this->updateZegoPromotion($tourModel, max($maxDiscountPercents));
-                }
-                
-                return;
+        // First, try common period field names directly in tour data
+        $periodArrayFields = ['period', 'periods', 'Periods', 'tour_periods'];
+        $periodsArray = null;
+        $foundPeriodField = null;
+        
+        foreach ($periodArrayFields as $fieldName) {
+            if (isset($tourData[$fieldName]) && is_array($tourData[$fieldName]) && !empty($tourData[$fieldName])) {
+                $periodsArray = $tourData[$fieldName];
+                $foundPeriodField = $fieldName;
+                break;
             }
+        }
+        
+        if ($periodsArray) {
+            Log::info('Found periods array in tour data, creating multiple periods', [
+                'provider' => $provider->code,
+                'tour_id' => $tourModel->id,
+                'period_field' => $foundPeriodField,
+                'periods_count' => count($periodsArray)
+            ]);
+            
+            // เก็บ max discount percent สำหรับ Zego
+            $maxDiscountPercents = [];
+            
+            foreach ($periodsArray as $periodData) {
+                $period = $this->createPeriodFromArray($provider, $periodData, $tourModel, $tourData);
+                
+                // Zego-specific: เก็บ discount percent
+                if ($provider->code === 'zego' && $period) {
+                    $discountPercent = $this->calculateZegoPeriodDiscount($period);
+                    $maxDiscountPercents[] = $discountPercent;
+                }
+            }
+            
+            // Zego-specific: คำนวณ promotion หลังจากสร้าง periods ทั้งหมดแล้ว
+            if ($provider->code === 'zego' && !empty($maxDiscountPercents)) {
+                $this->updateZegoPromotion($tourModel, max($maxDiscountPercents));
+            }
+            
+            return;
         }
         
         // Strategy 2: Check for direct period fields in tour data

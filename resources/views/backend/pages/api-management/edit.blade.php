@@ -937,7 +937,7 @@
                                             <i class="lucide lucide-edit w-4 h-4"></i> แก้ไข
                                         </button>
                                         <button type="button" onclick="deleteSchedule({{ $schedule->id }})" class="text-red-600 hover:text-red-800 text-sm">
-                                            <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ ลบ
+                                            <i class="lucide lucide-trash-2 w-4 h-4"></i> ลบ
                                         </button>
                                     </div>
                                 </div>
@@ -1340,16 +1340,17 @@ function updateStaticValueDisplay(index) {
     </div>
     
     <!-- Schedule Modal -->
-    <div id="scheduleModal" class="fixed inset-0 z-50 hidden bg-black bg-opacity-50 flex items-center justify-center">
-        <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full m-4 max-h-[90vh] overflow-y-auto">
-            <form id="scheduleForm" action="" method="POST">
-                @csrf
-                <input type="hidden" id="scheduleMethod" name="_method" value="POST">
-                
-                <!-- Modal Header -->
-                <div class="px-6 py-4 border-b border-gray-200">
-                    <h3 id="scheduleModalTitle" class="text-lg font-semibold text-gray-900">เพิ่มตารางเวลาใหม่</h3>
-                </div>
+    <div id="scheduleModal" class="fixed inset-0 z-50 hidden bg-black bg-opacity-50" style="display: none;">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+                <form id="scheduleForm" action="" method="POST">
+                    @csrf
+                    <input type="hidden" id="scheduleMethod" name="_method" value="POST">
+                    
+                    <!-- Modal Header -->
+                    <div class="px-6 py-4 border-b border-gray-200 bg-gray-50">
+                        <h3 id="scheduleModalTitle" class="text-lg font-semibold text-gray-900">เพิ่มตารางเวลาใหม่</h3>
+                    </div>
 
                 <!-- Modal Body -->
                 <div class="px-6 py-4 space-y-6">
@@ -1454,13 +1455,15 @@ function updateStaticValueDisplay(index) {
                 </div>
 
                 <!-- Modal Footer -->
-                <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
-                    <button type="button" onclick="closeScheduleModal()" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
-                        ยกเลิก
-                    </button>
-                    <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                        บันทึก
-                    </button>
+                <div class="px-6 py-4 border-t border-gray-200 bg-gray-50">
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="closeScheduleModal()" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition">
+                            ยกเลิก
+                        </button>
+                        <button type="submit" class="btn btn-primary px-4 py-2">
+                            บันทึก
+                        </button>
+                    </div>
                 </div>
             </form>
         </div>
@@ -1476,7 +1479,9 @@ function updateStaticValueDisplay(index) {
             document.getElementById('scheduleForm').action = `/webpanel/api-management/{{ $provider->id }}/schedules`;
             document.getElementById('scheduleMethod').value = 'POST';
             resetScheduleForm();
-            document.getElementById('scheduleModal').classList.remove('hidden');
+            const modal = document.getElementById('scheduleModal');
+            modal.classList.remove('hidden');
+            modal.style.display = 'block';
         }
 
         function editSchedule(scheduleId) {
@@ -1526,7 +1531,9 @@ function updateStaticValueDisplay(index) {
                     alert('เกิดข้อผิดพลาดในการโหลดข้อมูลตารางเวลา');
                 });
             
-            document.getElementById('scheduleModal').classList.remove('hidden');
+            const modal = document.getElementById('scheduleModal');
+            modal.classList.remove('hidden');
+            modal.style.display = 'block';
         }
 
         function deleteSchedule(scheduleId) {
@@ -1554,7 +1561,9 @@ function updateStaticValueDisplay(index) {
         }
 
         function closeScheduleModal() {
-            document.getElementById('scheduleModal').classList.add('hidden');
+            const modal = document.getElementById('scheduleModal');
+            modal.classList.add('hidden');
+            modal.style.display = 'none';
             resetScheduleForm();
         }
 
@@ -1671,6 +1680,41 @@ function updateStaticValueDisplay(index) {
             lucide.createIcons();
         }
     </script>
+
+    <style>
+        /* Modal Styles */
+        #scheduleModal {
+            backdrop-filter: blur(2px);
+        }
+        
+        #scheduleModal.hidden {
+            display: none !important;
+        }
+        
+        #scheduleModal:not(.hidden) {
+            display: block !important;
+        }
+        
+        /* Ensure modal content is visible */
+        #scheduleModal .bg-white {
+            position: relative;
+            z-index: 51;
+        }
+        
+        /* Smooth transitions */
+        #scheduleModal,
+        #scheduleModal button {
+            transition: all 0.2s ease-in-out;
+        }
+        
+        /* Form field focus styles */
+        #scheduleModal input:focus,
+        #scheduleModal select:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+    </style>
 
     <!-- BEGIN: JS Assets-->
     @include("backend.layout.script")
