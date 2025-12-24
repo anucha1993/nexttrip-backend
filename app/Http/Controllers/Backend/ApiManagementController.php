@@ -435,10 +435,11 @@ class ApiManagementController extends Controller
                 $config = is_string($provider->config) ? json_decode($provider->config, true) : ($provider->config ?? []);
                 $hasMultiStepConfig = $provider->requires_multi_step || 
                                     !empty($provider->tour_detail_endpoint) ||
-                                    !empty($config['period_url_pattern']);
+                                    !empty($config['period_url_pattern']) ||
+                                    !empty($config['detail_url_pattern']);
                 
                 if ($hasMultiStepConfig && $recordCount > 0) {
-                    // For multi-step APIs (GO365, TTN Japan), test detail/period endpoints for period counting
+                    // For multi-step APIs (GO365, TTN Japan, iTravel), test detail/period endpoints for period counting
                     $periodCount = $this->testMultiStepPeriods($provider, $responseData, $headers);
                 } else {
                     // For single-step APIs, count periods directly from main response
@@ -511,6 +512,9 @@ class ApiManagementController extends Controller
             // Get tours from response based on provider
             if ($provider->code === 'go365') {
                 $tours = $responseData['data'] ?? [];
+            } elseif ($provider->code === 'itravel' || $provider->code === 'itravels') {
+                // iTravel returns {result: "success", data: [tours]}
+                $tours = $responseData['data'] ?? [];
             } else {
                 $tours = is_array($responseData) ? $responseData : [];
             }
@@ -534,6 +538,33 @@ class ApiManagementController extends Controller
                         
                         if (isset($detailData['data'][0]['tour_period']) && is_array($detailData['data'][0]['tour_period'])) {
                             $periodCount += count($detailData['data'][0]['tour_period']);
+                        }
+                    }
+                } elseif ($provider->code === 'itravel' || $provider->code === 'itravels') {
+                    // iTravel: Detail endpoint returns {result: "success", data: [periods]}
+                    $tourCode = $tour['code'] ?? null;
+                    if (!$tourCode) continue;
+                    
+                    $config = is_string($provider->config) ? json_decode($provider->config, true) : ($provider->config ?? []);
+                    $detailUrlPattern = $config['detail_url_pattern'] ?? '/api/program/{code}';
+                    
+                    // Build full URL
+                    if (!str_starts_with($detailUrlPattern, 'http')) {
+                        $baseUrl = rtrim($provider->url, '/');
+                        $baseUrl = preg_replace('#/api/program$#', '', $baseUrl);
+                        $detailUrlPattern = $baseUrl . $detailUrlPattern;
+                    }
+                    
+                    $detailUrl = str_replace('{code}', $tourCode, $detailUrlPattern);
+                    
+                    $detailResponse = Http::withHeaders($headers)->timeout(10)->get($detailUrl);
+                    
+                    if ($detailResponse->successful()) {
+                        $detailData = $detailResponse->json();
+                        
+                        // iTravel returns {result: "success", data: [periods]}
+                        if (isset($detailData['data']) && is_array($detailData['data'])) {
+                            $periodCount += count($detailData['data']);
                         }
                     }
                 } else {
