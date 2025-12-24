@@ -142,10 +142,12 @@
                                             <div class="text-slate-500 text-xs">{{ $activeSchedule->schedule_description }}</div>
                                         </div>
                                     @else
+
                                         <div class="text-xs text-slate-400 text-center py-2 border-t border-slate-100">
                                             <i data-lucide="calendar-x" class="w-4 h-4 mx-auto mb-1"></i>
                                             <div>No active schedules</div>
                                         </div>
+                                        
                                     @endif
                                 </div>
 

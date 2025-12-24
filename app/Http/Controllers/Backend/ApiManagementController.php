@@ -2385,6 +2385,14 @@ class ApiManagementController extends Controller
                 'api_type' => $provider->code
             ])->whereNull('deleted_at')->first();
         }
+        
+        // For iTravel, check by code1 since api_id column is integer but iTravel uses string codes
+        if (!$existingTour && ($provider->code === 'itravel' || $provider->code === 'itravels') && isset($tourData['code'])) {
+            $existingTour = TourModel::where([
+                'code1' => $tourData['code'],
+                'api_type' => $provider->code
+            ])->whereNull('deleted_at')->first();
+        }
 
         if ($existingTour) {
             // ทัวร์มีอยู่แล้ว - อัปเดทข้อมูลแทนการสร้างใหม่
