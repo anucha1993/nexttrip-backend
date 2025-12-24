@@ -396,8 +396,13 @@ class ApiManagementController extends Controller
             }
             
             // Special handling for Best Consortium (multi-country API)
-            if ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
+            if ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium' || $provider->code === 'best') {
                 return $this->testBestConsortiumConnection($provider, $startTime, $headers);
+            }
+            
+            // Special handling for TTN ALL (multi-step API with complex period structure)
+            if ($provider->code === 'ttn_all') {
+                return $this->testTTNAllConnection($provider, $startTime, $headers);
             }
             
             $response = Http::withHeaders($headers)->timeout(30)->get($provider->url);
@@ -527,10 +532,11 @@ class ApiManagementController extends Controller
                         }
                     }
                 } else {
-                    // For TTN Japan and other multi-step APIs
+                    // For TTN Japan/All and other multi-step APIs
                     $tourId = null;
                     if (is_array($tour)) {
-                        $tourId = $tour['P_ID'] ?? $tour['id'] ?? null;
+                        // TTN uses P_ID field
+                        $tourId = $tour['P_ID'] ?? $tour['id'] ?? $tour['tour_id'] ?? null;
                     } elseif (is_numeric($tour)) {
                         $tourId = $tour;
                     }
@@ -540,7 +546,7 @@ class ApiManagementController extends Controller
                     $config = is_string($provider->config) ? json_decode($provider->config, true) : ($provider->config ?? []);
                     
                     if (!empty($config['period_url_pattern'])) {
-                        // TTN Japan: Use period endpoint directly
+                        // TTN Japan/All: Use period endpoint directly
                         $periodUrl = str_replace('{id}', $tourId, $config['period_url_pattern']);
                         $periodResponse = Http::withHeaders($headers)->timeout(10)->get($periodUrl);
                         
@@ -548,10 +554,37 @@ class ApiManagementController extends Controller
                             $periodData = $periodResponse->json();
                             
                             if (is_array($periodData)) {
-                                // TTN Japan structure: array of period groups, each with Price array
-                                foreach ($periodData as $periodGroup) {
-                                    if (isset($periodGroup['Price']) && is_array($periodGroup['Price'])) {
-                                        $periodCount += count($periodGroup['Price']);
+                                // TTN structure: Array of period objects
+                                // Each object can have multiple formats:
+                                
+                                // Format 1: Direct period array (TTN Japan old structure)
+                                if (isset($periodData[0]['P_ID']) || isset($periodData[0]['period_id'])) {
+                                    $periodCount += count($periodData);
+                                }
+                                // Format 2: Period groups with Price array (TTN All new structure)
+                                elseif (isset($periodData[0]['Price']) && is_array($periodData[0]['Price'])) {
+                                    foreach ($periodData as $periodGroup) {
+                                        if (isset($periodGroup['Price']) && is_array($periodGroup['Price'])) {
+                                            $periodCount += count($periodGroup['Price']);
+                                        }
+                                    }
+                                }
+                                // Format 3: Try common period field names
+                                else {
+                                    $periodFieldNames = ['period', 'periods', 'Periods'];
+                                    $foundPeriods = false;
+                                    
+                                    foreach ($periodFieldNames as $fieldName) {
+                                        if (isset($periodData[$fieldName]) && is_array($periodData[$fieldName])) {
+                                            $periodCount += count($periodData[$fieldName]);
+                                            $foundPeriods = true;
+                                            break;
+                                        }
+                                    }
+                                    
+                                    // Fallback: count array length
+                                    if (!$foundPeriods) {
+                                        $periodCount += count($periodData);
                                     }
                                 }
                             }
@@ -572,11 +605,28 @@ class ApiManagementController extends Controller
             }
             
             // Estimate total periods based on sample
-            if ($testLimit > 0 && $periodCount > 0) {
+            if ($testLimit > 0 && $periodCount > 0 && count($tours) > $testLimit) {
                 $avgPeriodsPerTour = $periodCount / $testLimit;
                 $estimatedTotal = round($avgPeriodsPerTour * count($tours));
+                
+                Log::info('Estimating total periods from sample', [
+                    'provider' => $provider->code,
+                    'tested_tours' => $testLimit,
+                    'periods_from_sample' => $periodCount,
+                    'avg_periods_per_tour' => $avgPeriodsPerTour,
+                    'total_tours' => count($tours),
+                    'estimated_total_periods' => $estimatedTotal
+                ]);
+                
                 return $estimatedTotal;
             }
+            
+            Log::info('Returning actual period count (no estimation)', [
+                'provider' => $provider->code,
+                'period_count' => $periodCount,
+                'test_limit' => $testLimit,
+                'tour_count' => count($tours)
+            ]);
             
             return $periodCount;
             
@@ -884,6 +934,148 @@ class ApiManagementController extends Controller
                 'response_size' => $responseSize,
                 'record_count' => $totalRecords,
                 'period_count' => $totalPeriods,
+                'data' => true,
+                'message' => $message,
+                'provider_code' => $provider->code
+            ]);
+            
+        } catch (\Exception $e) {
+            $endTime = microtime(true);
+            $responseTime = round(($endTime - $startTime), 3);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Connection error: ' . $e->getMessage(),
+                'response_time' => $responseTime
+            ], 500);
+        }
+    }
+
+    private function testTTNAllConnection($provider, $startTime, $headers)
+    {
+        try {
+            // TTN ALL: Main endpoint returns list of tours
+            $response = Http::withHeaders($headers)->timeout(30)->get($provider->url);
+            
+            if (!$response->successful()) {
+                $endTime = microtime(true);
+                $responseTime = round(($endTime - $startTime), 3);
+                
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to fetch tours: ' . $response->status(),
+                    'response_time' => $responseTime
+                ], 500);
+            }
+            
+            $tours = $response->json();
+            $totalRecords = is_array($tours) ? count($tours) : 0;
+            $responseSize = strlen($response->body());
+            
+            if ($totalRecords === 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No tours found in API response',
+                    'response_time' => 0
+                ], 500);
+            }
+            
+            // Get period URL pattern from config
+            $config = is_string($provider->config) ? json_decode($provider->config, true) : ($provider->config ?? []);
+            $periodUrlPattern = $config['period_url_pattern'] ?? $provider->tour_detail_endpoint ?? null;
+            
+            if (!$periodUrlPattern) {
+                // Fallback: Try to construct from known TTN ALL pattern
+                // TTN ALL period endpoint: https://www.ttnplus.co.th/api/program/{id}
+                if (strpos($provider->url, 'ttnplus.co.th') !== false) {
+                    $periodUrlPattern = 'https://www.ttnplus.co.th/api/program/{id}';
+                }
+            }
+            
+            if (!$periodUrlPattern) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'TTN ALL: period_url_pattern not configured in provider settings',
+                    'response_time' => 0
+                ], 500);
+            }
+            
+            // Test periods from first 5 tours
+            $totalPeriods = 0;
+            $testLimit = min(5, $totalRecords);
+            
+            for ($i = 0; $i < $testLimit; $i++) {
+                $tour = $tours[$i];
+                $tourId = $tour['P_ID'] ?? null;
+                
+                if (!$tourId) continue;
+                
+                $periodUrl = str_replace('{id}', $tourId, $periodUrlPattern);
+                
+                try {
+                    $periodResponse = Http::withHeaders($headers)->timeout(10)->get($periodUrl);
+                    
+                    if ($periodResponse->successful()) {
+                        $periodData = $periodResponse->json();
+                        
+                        if (is_array($periodData) && !empty($periodData)) {
+                            // Check different period structures
+                            $firstItem = $periodData[0];
+                            
+                            // Format 1: Direct period array (has P_DUE_START field)
+                            if (isset($firstItem['P_DUE_START']) || isset($firstItem['P_ID'])) {
+                                $totalPeriods += count($periodData);
+                            }
+                            // Format 2: Period groups with Price array
+                            elseif (isset($firstItem['Price']) && is_array($firstItem['Price'])) {
+                                foreach ($periodData as $group) {
+                                    if (isset($group['Price']) && is_array($group['Price'])) {
+                                        $totalPeriods += count($group['Price']);
+                                    }
+                                }
+                            }
+                            // Format 3: Fallback - count array length
+                            else {
+                                $totalPeriods += count($periodData);
+                            }
+                        }
+                    }
+                } catch (\Exception $e) {
+                    Log::warning("TTN ALL test: Failed to get periods for tour {$tourId}", [
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+            
+            $endTime = microtime(true);
+            $responseTime = round(($endTime - $startTime), 3);
+            
+            // Estimate total periods
+            $estimatedPeriods = 0;
+            if ($testLimit > 0 && $totalPeriods > 0) {
+                $avgPeriodsPerTour = $totalPeriods / $testLimit;
+                $estimatedPeriods = round($avgPeriodsPerTour * $totalRecords);
+            }
+            
+            $message = "Connection successful! Found {$totalRecords} tours with estimated {$estimatedPeriods} periods (sampled {$testLimit} tours with {$totalPeriods} periods).";
+            
+            ApiTestResultModel::create([
+                'api_provider_id' => $provider->id,
+                'test_type' => 'connection',
+                'status' => 'success',
+                'response_message' => $message,
+                'response_time' => $responseTime,
+                'response_size' => $responseSize,
+                'tested_at' => now()
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'status' => 200,
+                'response_time' => $responseTime,
+                'response_size' => $responseSize,
+                'record_count' => $totalRecords,
+                'period_count' => $estimatedPeriods,
                 'data' => true,
                 'message' => $message,
                 'provider_code' => $provider->code
