@@ -1958,6 +1958,14 @@ class ApiManagementController extends Controller
                 'api_type' => $provider->code
             ])->whereNull('deleted_at')->first();
         }
+        
+        // For Best Consortium, also check by code1 (tour code from API) to prevent duplicate constraint violations
+        if (!$existingTour && ($provider->code === 'bestconsortium' || $provider->code === 'best') && isset($tourData['id'])) {
+            $existingTour = TourModel::where([
+                'code1' => $tourData['id'],
+                'api_type' => $provider->code
+            ])->whereNull('deleted_at')->first();
+        }
 
         if ($existingTour) {
             // ทัวร์มีอยู่แล้ว - อัปเดทข้อมูลแทนการสร้างใหม่
@@ -2050,6 +2058,15 @@ class ApiManagementController extends Controller
                 'trace' => $e->getTraceAsString()
             ]);
             throw $e;
+        }
+        
+        // For Super Holiday, if code1 is empty, use api_id to avoid unique constraint violation
+        if (($provider->code === 'superholiday' || $provider->code === 'super_holiday') && empty($tourModel->code1)) {
+            $tourModel->code1 = $apiId;
+            Log::info('Super Holiday: Set code1 to api_id (was empty)', [
+                'api_id' => $apiId,
+                'tour_code' => $tourModel->code
+            ]);
         }
         
         // สำหรับ TTN Japan - เพิ่ม city_id logic (เหมือน headcode เดิม)
