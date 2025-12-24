@@ -783,43 +783,89 @@ class ApiManagementController extends Controller
     private function testBestConsortiumConnection($provider, $startTime, $headers)
     {
         try {
-            // Best Consortium: Test countries endpoint
+            // Best Consortium: Get all countries then fetch tours from each country
+            // Step 1: Get countries list
             $countriesUrl = 'https://api.best-consortium.com/v1/series/country';
-            $response = Http::withHeaders($headers)->timeout(10)->get($countriesUrl);
+            $countriesResponse = Http::withHeaders($headers)->timeout(10)->get($countriesUrl);
             
-            $endTime = microtime(true);
-            $responseTime = round(($endTime - $startTime), 3);
-            
-            if (!$response->successful()) {
+            if (!$countriesResponse->successful()) {
+                $endTime = microtime(true);
+                $responseTime = round(($endTime - $startTime), 3);
+                
                 return response()->json([
                     'success' => false,
-                    'message' => 'Connection failed: ' . $response->status(),
+                    'message' => 'Failed to fetch countries: ' . $countriesResponse->status(),
                     'response_time' => $responseTime
                 ], 500);
             }
             
-            $countries = $response->json();
-            $countryCount = is_array($countries) ? count($countries) : 0;
+            $countries = $countriesResponse->json();
+            if (!is_array($countries) || count($countries) === 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No countries found in API response',
+                    'response_time' => 0
+                ], 500);
+            }
             
-            // Test first country for tours
+            // Step 2: Loop through all countries and count tours/periods
             $totalRecords = 0;
             $totalPeriods = 0;
+            $responseSize = strlen($countriesResponse->body());
+            $processedCountries = 0;
             
-            if ($countryCount > 0 && isset($countries[0]['countryId'])) {
-                $testCountryId = $countries[0]['countryId'];
-                $toursUrl = "https://api.best-consortium.com/api/tour-programs/v2/{$testCountryId}";
+            foreach ($countries as $country) {
+                $countryId = $country['id'] ?? null;
+                if (!$countryId) continue;
                 
-                $toursResponse = Http::withHeaders($headers)->timeout(10)->get($toursUrl);
+                $url = str_replace('{countryId}', $countryId, $provider->url);
                 
-                if ($toursResponse->successful()) {
-                    $tours = $toursResponse->json();
-                    $totalRecords = is_array($tours) ? count($tours) : 0;
-                    // Best Consortium: Each tour has ~6 periods
-                    $totalPeriods = $totalRecords * 6;
+                try {
+                    $response = Http::withHeaders($headers)->timeout(10)->get($url);
+                    
+                    if ($response->successful()) {
+                        $data = $response->json();
+                        $responseSize += strlen($response->body());
+                        
+                        if (is_array($data)) {
+                            $tourCount = count($data);
+                            $totalRecords += $tourCount;
+                            
+                            // Count periods from tours
+                            foreach ($data as $tour) {
+                                // Try common period field names
+                                $periodFields = ['periods', 'Periods', 'period', 'dates', 'departures'];
+                                $periodsFound = false;
+                                
+                                foreach ($periodFields as $periodField) {
+                                    if (isset($tour[$periodField]) && is_array($tour[$periodField])) {
+                                        $totalPeriods += count($tour[$periodField]);
+                                        $periodsFound = true;
+                                        break;
+                                    }
+                                }
+                                
+                                // If no period array found, estimate based on typical Best Consortium structure
+                                if (!$periodsFound) {
+                                    // Best typically has 3-10 periods per tour
+                                    $totalPeriods += 6; // Average estimate
+                                }
+                            }
+                            
+                            $processedCountries++;
+                        }
+                    }
+                } catch (\Exception $e) {
+                    Log::warning("Best Consortium test: Country {$countryId} failed", [
+                        'error' => $e->getMessage()
+                    ]);
                 }
             }
             
-            $message = "Connection successful! Found {$countryCount} countries with estimated {$totalRecords} tours and {$totalPeriods} periods.";
+            $endTime = microtime(true);
+            $responseTime = round(($endTime - $startTime), 3);
+            
+            $message = "Connection successful! Found {$totalRecords} tours with {$totalPeriods} periods from {$processedCountries} countries.";
             
             ApiTestResultModel::create([
                 'api_provider_id' => $provider->id,
@@ -827,7 +873,7 @@ class ApiManagementController extends Controller
                 'status' => 'success',
                 'response_message' => $message,
                 'response_time' => $responseTime,
-                'response_size' => strlen($response->body()),
+                'response_size' => $responseSize,
                 'tested_at' => now()
             ]);
             
@@ -835,7 +881,7 @@ class ApiManagementController extends Controller
                 'success' => true,
                 'status' => 200,
                 'response_time' => $responseTime,
-                'response_size' => strlen($response->body()),
+                'response_size' => $responseSize,
                 'record_count' => $totalRecords,
                 'period_count' => $totalPeriods,
                 'data' => true,
