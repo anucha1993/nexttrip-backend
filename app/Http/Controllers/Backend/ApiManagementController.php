@@ -405,6 +405,11 @@ class ApiManagementController extends Controller
                 return $this->testTTNAllConnection($provider, $startTime, $headers);
             }
             
+            // Special handling for Checkin Group (periods array in tour data)
+            if ($provider->code === 'checkingroup' || $provider->code === 'checkin_group') {
+                return $this->testCheckinGroupConnection($provider, $startTime, $headers);
+            }
+            
             $response = Http::withHeaders($headers)->timeout(30)->get($provider->url);
             
             $endTime = microtime(true);
@@ -1076,6 +1081,82 @@ class ApiManagementController extends Controller
                 'response_size' => $responseSize,
                 'record_count' => $totalRecords,
                 'period_count' => $estimatedPeriods,
+                'data' => true,
+                'message' => $message,
+                'provider_code' => $provider->code
+            ]);
+            
+        } catch (\Exception $e) {
+            $endTime = microtime(true);
+            $responseTime = round(($endTime - $startTime), 3);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Connection error: ' . $e->getMessage(),
+                'response_time' => $responseTime
+            ], 500);
+        }
+    }
+
+    private function testCheckinGroupConnection($provider, $startTime, $headers)
+    {
+        try {
+            // Checkin Group: Main endpoint returns tours with periods array
+            $response = Http::withHeaders($headers)->timeout(30)->get($provider->url);
+            
+            if (!$response->successful()) {
+                $endTime = microtime(true);
+                $responseTime = round(($endTime - $startTime), 3);
+                
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to fetch tours: ' . $response->status(),
+                    'response_time' => $responseTime
+                ], 500);
+            }
+            
+            $tours = $response->json();
+            $totalRecords = is_array($tours) ? count($tours) : 0;
+            $responseSize = strlen($response->body());
+            
+            if ($totalRecords === 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No tours found in API response',
+                    'response_time' => 0
+                ], 500);
+            }
+            
+            // Count periods from all tours
+            $totalPeriods = 0;
+            foreach ($tours as $tour) {
+                if (isset($tour['periods']) && is_array($tour['periods'])) {
+                    $totalPeriods += count($tour['periods']);
+                }
+            }
+            
+            $endTime = microtime(true);
+            $responseTime = round(($endTime - $startTime), 3);
+            
+            $message = "Connection successful! Found {$totalRecords} tours with {$totalPeriods} periods total.";
+            
+            ApiTestResultModel::create([
+                'api_provider_id' => $provider->id,
+                'test_type' => 'connection',
+                'status' => 'success',
+                'response_message' => $message,
+                'response_time' => $responseTime,
+                'response_size' => $responseSize,
+                'tested_at' => now()
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'status' => 200,
+                'response_time' => $responseTime,
+                'response_size' => $responseSize,
+                'record_count' => $totalRecords,
+                'period_count' => $totalPeriods,
                 'data' => true,
                 'message' => $message,
                 'provider_code' => $provider->code
@@ -3329,7 +3410,7 @@ class ApiManagementController extends Controller
             // Other APIs: Download PDF + insert header/footer
             $headers = get_headers($pdfUrl, 1);
             
-            // Tour Factory: ต้องใส่ Referer header (เหมือน headcode)
+            // Tour Factory & Checkin Group: ต้องใส่ Referer header
             $httpOptions = [];
             if ($provider->code === 'tourfactory' || $provider->code === 'tour_factory') {
                 $httpOptions = [
@@ -3340,6 +3421,30 @@ class ApiManagementController extends Controller
                     ]
                 ];
                 $response = Http::withOptions($httpOptions)->get($pdfUrl);
+            } elseif ($provider->code === 'checkingroup' || $provider->code === 'checkin_group') {
+                // Checkin Group: Try with referer and user agent
+                $httpOptions = [
+                    'headers' => [
+                        'Referer' => 'https://booking.checkingroup.co.th/',
+                        'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept' => 'application/pdf,application/octet-stream,*/*'
+                    ]
+                ];
+                $response = Http::withOptions($httpOptions)->timeout(60)->get($pdfUrl);
+                
+                // If still fails (410/404), log warning and save URL instead
+                if (!$response->successful()) {
+                    Log::warning("Checkin Group PDF not accessible via direct download", [
+                        'provider' => $provider->code,
+                        'url' => $pdfUrl,
+                        'status' => $response->status(),
+                        'note' => 'Saving URL instead - may need manual download or API access'
+                    ]);
+                    
+                    // Save URL as fallback
+                    $tourModel->pdf_file = $pdfUrl;
+                    return;
+                }
             } else {
                 $response = Http::get($pdfUrl);
             }
