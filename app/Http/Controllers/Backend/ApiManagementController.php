@@ -1459,6 +1459,12 @@ class ApiManagementController extends Controller
             if (!is_array($programIds)) {
                 throw new \Exception('GO365 API: Expected data array not found');
             }
+        } elseif ($provider->code === 'itravels' || $provider->code === 'itravel') {
+            // iTravels returns: {"result": "success", "data": [tours]}
+            $programIds = $responseData['data'] ?? [];
+            if (!is_array($programIds)) {
+                throw new \Exception('iTravels API: Expected data array not found. Got: ' . gettype($responseData['data'] ?? null));
+            }
         } else {
             // TTN returns array directly
             $programIds = $responseData;
@@ -1496,6 +1502,26 @@ class ApiManagementController extends Controller
                     }
                     
                     $detailUrl = str_replace('{tour_id}', $tourId, $provider->tour_detail_endpoint);
+                } elseif ($provider->code === 'itravels' || $provider->code === 'itravel') {
+                    // iTravels structure: use 'code' field with detail_url_pattern
+                    $programId = is_array($programData) ? ($programData['code'] ?? null) : $programData;
+                    if (!$programId) {
+                        $errorCount++;
+                        Log::error('iTravels: No program code found', ['program_data' => $programData]);
+                        continue;
+                    }
+                    
+                    $detailUrlPattern = $config['detail_url_pattern'] ?? '/api/program/{code}';
+                    
+                    // Build full URL if pattern doesn't start with http
+                    if (!str_starts_with($detailUrlPattern, 'http')) {
+                        $baseUrl = rtrim($provider->url, '/');
+                        // Remove /api/program from base URL if it exists
+                        $baseUrl = preg_replace('#/api/program$#', '', $baseUrl);
+                        $detailUrlPattern = $baseUrl . $detailUrlPattern;
+                    }
+                    
+                    $detailUrl = str_replace('{code}', $programId, $detailUrlPattern);
                 } else {
                     // TTN structure: use P_ID with config pattern
                     $programId = is_array($programData) ? ($programData['P_ID'] ?? null) : $programData;
@@ -1542,6 +1568,49 @@ class ApiManagementController extends Controller
                         if (isset($programDetails['data'][0]['tour_period']) && 
                             is_array($programDetails['data'][0]['tour_period'])) {
                             $this->processGO365Periods($provider, $result['tour_model'], $programDetails['data'][0]);
+                        }
+                    } elseif ($result['action'] === 'duplicated') {
+                        $duplicatedTours++;
+                    }
+                    
+                    $processedCount++;
+                } elseif ($provider->code === 'itravels' || $provider->code === 'itravel') {
+                    // iTravels: Detail response structure is {result: "success", data: [periods array]}
+                    // The data array contains the periods directly, not nested under a 'periods' key
+                    $periods = $programDetails['data'] ?? [];
+                    
+                    Log::info('iTravels: Processing tour and periods', [
+                        'provider' => $provider->code,
+                        'tour_code' => $programData['code'] ?? 'UNKNOWN',
+                        'periods_is_array' => is_array($periods),
+                        'periods_count' => is_array($periods) ? count($periods) : 0,
+                        'periods_sample' => is_array($periods) && !empty($periods) ? array_keys($periods[0]) : 'EMPTY'
+                    ]);
+                    
+                    // Use program data from main list for tour info
+                    $result = $this->processTourData($provider, $programData, $syncLog);
+                    
+                    if ($result['action'] === 'created' || $result['action'] === 'updated') {
+                        if ($result['action'] === 'created') {
+                            $createdTours++;
+                        }
+                        
+                        Log::info('Tour processed, now processing periods', [
+                            'action' => $result['action'],
+                            'tour_id' => $result['tour_model']->id,
+                            'periods_count' => count($periods)
+                        ]);
+                        
+                        // Process periods - the data array IS the periods array
+                        if (is_array($periods) && !empty($periods)) {
+                            // Delete old periods first (for updates)
+                            if ($result['action'] === 'updated') {
+                                \App\Models\Backend\TourPeriodModel::where('tour_id', $result['tour_model']->id)->delete();
+                            }
+                            
+                            foreach ($periods as $periodData) {
+                                $this->createPeriodFromArray($provider, $periodData, $result['tour_model']);
+                            }
                         }
                     } elseif ($result['action'] === 'duplicated') {
                         $duplicatedTours++;
@@ -3731,7 +3800,9 @@ class ApiManagementController extends Controller
         
         // Strategy 2: Check for direct period fields in tour data
         // BUT: Skip this for TTN Japan/All - they ALWAYS need period endpoint call
-        if ($provider->code !== 'ttn_japan' && $provider->code !== 'ttn_all') {
+        // AND: Skip for iTravel - they return periods from detail endpoint (/{code})
+        if ($provider->code !== 'ttn_japan' && $provider->code !== 'ttn_all' && 
+            $provider->code !== 'itravel' && $provider->code !== 'itravels') {
             $directPeriodFields = [];
             foreach ($periodMappings as $mapping) {
                 if ($mapping->local_field !== 'periods' && isset($tourData[$mapping->api_field])) {
@@ -3849,6 +3920,17 @@ class ApiManagementController extends Controller
         
         $period = $this->createBasePeriod($provider, $tourModel);
         
+        // Debug log
+        Log::info('createPeriodFromArray called', [
+            'provider' => $provider->code,
+            'tour_id' => $tourModel->id,
+            'periodData_keys' => array_keys($periodData),
+            'date_start' => $periodData['date_start'] ?? 'NOT FOUND',
+            'date_end' => $periodData['date_end'] ?? 'NOT FOUND',
+            'price' => $periodData['price'] ?? 'NOT FOUND',
+            'mappings_count' => $periodMappings->count()
+        ]);
+        
         // Map ข้อมูลจาก field mappings
         foreach ($periodMappings as $mapping) {
             if ($mapping->local_field === 'periods') continue;
@@ -3857,7 +3939,8 @@ class ApiManagementController extends Controller
             if ($mapping->api_field === 'calculated_from_time' && $tourData) {
                 $apiValue = $tourData['time'] ?? null;
             } else {
-                $apiValue = $periodData[$mapping->api_field] ?? null;
+                // Support nested fields using data_get (e.g., "price.adult.0.price")
+                $apiValue = data_get($periodData, $mapping->api_field);
             }
             
             if ($apiValue !== null) {
