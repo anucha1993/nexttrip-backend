@@ -521,6 +521,7 @@ class ApiManagementController extends Controller
             
             // Test detail/period endpoint for first few tours
             $testLimit = min(3, count($tours)); // Test max 3 tours
+            $testedToursCount = 0;
             
             for ($i = 0; $i < $testLimit; $i++) {
                 $tour = $tours[$i];
@@ -538,6 +539,7 @@ class ApiManagementController extends Controller
                         
                         if (isset($detailData['data'][0]['tour_period']) && is_array($detailData['data'][0]['tour_period'])) {
                             $periodCount += count($detailData['data'][0]['tour_period']);
+                            $testedToursCount++;
                         }
                     }
                 } elseif ($provider->code === 'itravel' || $provider->code === 'itravels') {
@@ -565,6 +567,7 @@ class ApiManagementController extends Controller
                         // iTravel returns {result: "success", data: [periods]}
                         if (isset($detailData['data']) && is_array($detailData['data'])) {
                             $periodCount += count($detailData['data']);
+                            $testedToursCount++;
                         }
                     }
                 } else {
@@ -596,6 +599,7 @@ class ApiManagementController extends Controller
                                 // Format 1: Direct period array (TTN Japan old structure)
                                 if (isset($periodData[0]['P_ID']) || isset($periodData[0]['period_id'])) {
                                     $periodCount += count($periodData);
+                                    $testedToursCount++;
                                 }
                                 // Format 2: Period groups with Price array (TTN All new structure)
                                 elseif (isset($periodData[0]['Price']) && is_array($periodData[0]['Price'])) {
@@ -604,6 +608,7 @@ class ApiManagementController extends Controller
                                             $periodCount += count($periodGroup['Price']);
                                         }
                                     }
+                                    $testedToursCount++;
                                 }
                                 // Format 3: Try common period field names
                                 else {
@@ -622,6 +627,10 @@ class ApiManagementController extends Controller
                                     if (!$foundPeriods) {
                                         $periodCount += count($periodData);
                                     }
+                                    
+                                    if ($foundPeriods || count($periodData) > 0) {
+                                        $testedToursCount++;
+                                    }
                                 }
                             }
                         }
@@ -634,20 +643,24 @@ class ApiManagementController extends Controller
                         
                         if ($detailResponse->successful()) {
                             $detailData = $detailResponse->json();
-                            $periodCount += $this->countPeriodsFromResponse($detailData, $provider);
+                            $counted = $this->countPeriodsFromResponse($detailData, $provider);
+                            if ($counted > 0) {
+                                $periodCount += $counted;
+                                $testedToursCount++;
+                            }
                         }
                     }
                 }
             }
             
-            // Estimate total periods based on sample
-            if ($testLimit > 0 && $periodCount > 0 && count($tours) > $testLimit) {
-                $avgPeriodsPerTour = $periodCount / $testLimit;
+            // Estimate total periods based on sample (use testedToursCount not testLimit for accuracy)
+            if ($testedToursCount > 0 && $periodCount > 0 && count($tours) > $testedToursCount) {
+                $avgPeriodsPerTour = $periodCount / $testedToursCount;
                 $estimatedTotal = round($avgPeriodsPerTour * count($tours));
                 
                 Log::info('Estimating total periods from sample', [
                     'provider' => $provider->code,
-                    'tested_tours' => $testLimit,
+                    'tested_tours' => $testedToursCount,
                     'periods_from_sample' => $periodCount,
                     'avg_periods_per_tour' => $avgPeriodsPerTour,
                     'total_tours' => count($tours),
@@ -799,10 +812,9 @@ class ApiManagementController extends Controller
     private function testSuperHolidayConnection($provider, $startTime, $headers)
     {
         try {
-            // Super Holiday: Test first 3 category IDs
-            $testCategoryIds = [21, 29, 28];
-            $totalRecords = 0;
-            $totalPeriods = 0;
+            // Super Holiday: Test all category IDs (same as full sync)
+            $testCategoryIds = [21, 29, 28, 23, 25, 24, 18, 2, 3, 17, 1, 19];
+            $allRecords = [];
             $responseSize = 0;
             
             foreach ($testCategoryIds as $catId) {
@@ -816,8 +828,7 @@ class ApiManagementController extends Controller
                         $responseSize += strlen($response->body());
                         
                         if (is_array($data)) {
-                            $totalRecords += count($data);
-                            $totalPeriods += count($data); // Super Holiday: 1 tour = 1 period
+                            $allRecords = array_merge($allRecords, $data);
                         }
                     }
                 } catch (\Exception $e) {
@@ -827,10 +838,27 @@ class ApiManagementController extends Controller
                 }
             }
             
+            // Super Holiday: Group records by mainid (1 tour = multiple periods)
+            // Each record in API response is 1 period, not 1 tour!
+            $tourGroups = [];
+            foreach ($allRecords as $record) {
+                $mainid = $record['mainid'] ?? null;
+                if ($mainid) {
+                    if (!isset($tourGroups[$mainid])) {
+                        $tourGroups[$mainid] = [];
+                    }
+                    $tourGroups[$mainid][] = $record;
+                }
+            }
+            
+            $totalRecords = count($allRecords);
+            $totalTours = count($tourGroups);
+            $totalPeriods = $totalRecords; // Each record is 1 period
+            
             $endTime = microtime(true);
             $responseTime = round(($endTime - $startTime), 3);
             
-            $message = "Connection successful! Found {$totalRecords} records with {$totalPeriods} periods from 3 sample categories.";
+            $message = "Connection successful! Found {$totalRecords} period records from {$totalTours} unique tours (all 12 categories).";
             
             ApiTestResultModel::create([
                 'api_provider_id' => $provider->id,
@@ -847,8 +875,8 @@ class ApiManagementController extends Controller
                 'status' => 200,
                 'response_time' => $responseTime,
                 'response_size' => $responseSize,
-                'record_count' => $totalRecords,
-                'period_count' => $totalPeriods,
+                'record_count' => $totalTours, // Unique tours (what UI expects)
+                'period_count' => $totalPeriods, // Total period records
                 'data' => true,
                 'message' => $message,
                 'provider_code' => $provider->code
@@ -1592,16 +1620,17 @@ class ApiManagementController extends Controller
                     // GO365: Process main tour and periods from detail response
                     $result = $this->processTourData($provider, $programData, $syncLog);
                     
+                    // Track creation status
                     if ($result['action'] === 'created') {
                         $createdTours++;
-                        
-                        // Process GO365 periods from detail response
-                        if (isset($programDetails['data'][0]['tour_period']) && 
-                            is_array($programDetails['data'][0]['tour_period'])) {
-                            $this->processGO365Periods($provider, $result['tour_model'], $programDetails['data'][0]);
-                        }
                     } elseif ($result['action'] === 'duplicated') {
                         $duplicatedTours++;
+                    }
+                    
+                    // Process GO365 periods from detail response (for both new and existing tours)
+                    if (isset($programDetails['data'][0]['tour_period']) && 
+                        is_array($programDetails['data'][0]['tour_period'])) {
+                        $this->processGO365Periods($provider, $result['tour_model'], $programDetails['data'][0]);
                     }
                     
                     $processedCount++;
@@ -1634,13 +1663,25 @@ class ApiManagementController extends Controller
                         
                         // Process periods - the data array IS the periods array
                         if (is_array($periods) && !empty($periods)) {
-                            // Delete old periods first (for updates)
-                            if ($result['action'] === 'updated') {
-                                \App\Models\Backend\TourPeriodModel::where('tour_id', $result['tour_model']->id)->delete();
-                            }
+                            // Delete old periods first (including default period created by processPeriods)
+                            \App\Models\Backend\TourPeriodModel::where('tour_id', $result['tour_model']->id)->delete();
                             
-                            foreach ($periods as $periodData) {
-                                $this->createPeriodFromArray($provider, $periodData, $result['tour_model']);
+                            Log::info('iTravels: About to loop periods', [
+                                'tour_id' => $result['tour_model']->id,
+                                'periods_count' => count($periods),
+                                'first_period_keys' => array_keys($periods[0])
+                            ]);
+                            
+                            foreach ($periods as $singlePeriod) {
+                                try {
+                                    $this->createPeriodFromArray($provider, $singlePeriod, $result['tour_model']);
+                                } catch (\Exception $e) {
+                                    Log::error('Error creating period', [
+                                        'tour_id' => $result['tour_model']->id,
+                                        'error' => $e->getMessage(),
+                                        'period_keys' => is_array($singlePeriod) ? array_keys($singlePeriod) : 'NOT_ARRAY'
+                                    ]);
+                                }
                             }
                         }
                     } elseif ($result['action'] === 'duplicated') {
@@ -1679,6 +1720,74 @@ class ApiManagementController extends Controller
                     'provider' => $provider->name,
                     'program_id' => is_array($programData) ? ($programData['P_ID'] ?? 'unknown') : $programData,
                     'error' => $e->getMessage()
+                ]);
+            }
+        }
+        
+        // Soft delete logic for GO365 (headcode lines 3808-3815)
+        if ($provider->code === 'go365') {
+            // Collect all tour/period IDs that were synced
+            $syncedTourIds = [];
+            $syncedTourApiIds = [];
+            $syncedPeriodIds = [];
+            $syncedPeriodApiIds = [];
+            
+            $syncedTours = \App\Models\Backend\TourModel::where('api_type', 'go365')
+                ->whereNull('deleted_at')
+                ->get(['id', 'api_id']);
+                
+            foreach ($syncedTours as $tour) {
+                $syncedTourIds[] = $tour->id;
+                $syncedTourApiIds[] = $tour->api_id;
+                
+                $periods = \App\Models\Backend\TourPeriodModel::where('tour_id', $tour->id)
+                    ->where('api_type', 'go365')
+                    ->whereNull('deleted_at')
+                    ->get(['id', 'period_api_id']);
+                    
+                foreach ($periods as $period) {
+                    $syncedPeriodIds[] = $period->id;
+                    if ($period->period_api_id) {
+                        $syncedPeriodApiIds[] = $period->period_api_id;
+                    }
+                }
+            }
+            
+            if (!empty($syncedTourIds) && !empty($syncedTourApiIds)) {
+                // Soft delete tours not in synced list (disappeared from API)
+                \App\Models\Backend\TourModel::whereNotIn('id', $syncedTourIds)
+                    ->whereNotIn('api_id', $syncedTourApiIds)
+                    ->where('api_type', 'go365')
+                    ->whereNull('deleted_at')
+                    ->update(['deleted_at' => date('Y-m-d H:i:s')]);
+                    
+                // Restore tours that are in synced list (returned to API)
+                \App\Models\Backend\TourModel::whereIn('id', $syncedTourIds)
+                    ->whereIn('api_id', $syncedTourApiIds)
+                    ->where('api_type', 'go365')
+                    ->update(['deleted_at' => null]);
+                    
+                Log::info('GO365 tour soft delete completed', [
+                    'synced_tours' => count($syncedTourIds)
+                ]);
+            }
+            
+            if (!empty($syncedPeriodIds) && !empty($syncedPeriodApiIds)) {
+                // Soft delete periods not in synced list
+                \App\Models\Backend\TourPeriodModel::whereNotIn('id', $syncedPeriodIds)
+                    ->whereNotIn('period_api_id', $syncedPeriodApiIds)
+                    ->where('api_type', 'go365')
+                    ->whereNull('deleted_at')
+                    ->update(['deleted_at' => date('Y-m-d H:i:s')]);
+                    
+                // Restore periods that are in synced list
+                \App\Models\Backend\TourPeriodModel::whereIn('id', $syncedPeriodIds)
+                    ->whereIn('period_api_id', $syncedPeriodApiIds)
+                    ->where('api_type', 'go365')
+                    ->update(['deleted_at' => null]);
+                    
+                Log::info('GO365 period soft delete completed', [
+                    'synced_periods' => count($syncedPeriodIds)
                 ]);
             }
         }
@@ -1876,9 +1985,22 @@ class ApiManagementController extends Controller
                 return;
             }
 
+            $maxDiscounts = []; // เก็บ max discount % จากทุก period (สำหรับ promotion logic)
+
             foreach ($tourDetailData['tour_period'] as $periodData) {
-                // Create period based on headcode logic
-                $periodModel = new \App\Models\Backend\TourPeriodModel();
+                // Check if period already exists (like headcode and TTN logic)
+                $periodModel = \App\Models\Backend\TourPeriodModel::where([
+                    'tour_id' => $tourModel->id,
+                    'period_api_id' => $periodData['period_id'] ?? null,
+                    'api_type' => 'go365'
+                ])
+                ->whereNull('deleted_at')
+                ->first();
+
+                // Create new if not exists
+                if (!$periodModel) {
+                    $periodModel = new \App\Models\Backend\TourPeriodModel();
+                }
                 
                 // Map fields according to headcode
                 $periodModel->tour_id = $tourModel->id;
@@ -1911,11 +2033,95 @@ class ApiManagementController extends Controller
                 $periodModel->group_date = $periodData['period_date'] ? date('mY', strtotime($periodData['period_date'])) : null;
                 
                 $periodModel->save();
+                
+                // Calculate discount % for promotion logic (headcode logic)
+                // Note: headcode has variables $cal1-$cal4 but code is missing
+                // Assuming it's based on special_price percentage
+                if ($periodModel->special_price1 > 0 && $price1 > 0) {
+                    $discountPercent = ($periodModel->special_price1 / $price1) * 100;
+                    $maxDiscounts[] = $discountPercent;
+                }
             }
+            
+            // Calculate price_group based on cheapest period (headcode lines 3745-3785)
+            $allPeriods = \App\Models\Backend\TourPeriodModel::where('tour_id', $tourModel->id)
+                ->where('api_type', 'go365')
+                ->whereNull('deleted_at')
+                ->get();
+                
+            if ($allPeriods->count() > 0) {
+                // Find cheapest period (price1 - special_price1)
+                $cheapestPeriod = $allPeriods->sortBy(function ($item) {
+                    return $item->price1 - ($item->special_price1 ?? 0);
+                })->first();
+                
+                if ($cheapestPeriod) {
+                    $num_day = '';
+                    if ($cheapestPeriod->day && $cheapestPeriod->night) {
+                        $num_day = $cheapestPeriod->day . ' วัน ' . $cheapestPeriod->night . ' คืน';
+                    }
+                    
+                    $price = $cheapestPeriod->price1;
+                    $special_price = $cheapestPeriod->special_price1 ?? 0;
+                    $net_price = $price - $special_price;
+                    
+                    // Calculate price_group (headcode logic)
+                    $price_group = 0;
+                    if ($net_price > 0) {
+                        if ($net_price <= 10000) {
+                            $price_group = 1;
+                        } elseif ($net_price <= 20000) {
+                            $price_group = 2;
+                        } elseif ($net_price <= 30000) {
+                            $price_group = 3;
+                        } elseif ($net_price <= 50000) {
+                            $price_group = 4;
+                        } elseif ($net_price <= 80000) {
+                            $price_group = 5;
+                        } else {
+                            $price_group = 6;
+                        }
+                    }
+                    
+                    // Update tour with price info
+                    $tourModel->num_day = $num_day;
+                    $tourModel->price = $price;
+                    $tourModel->price_group = $price_group;
+                    $tourModel->special_price = $special_price;
+                }
+            }
+            
+            // Promotion logic (headcode lines 3789-3796)
+            if (!empty($maxDiscounts)) {
+                $maxDiscount = max($maxDiscounts);
+                
+                if ($maxDiscount >= 30) {
+                    // โปรไฟไหม้
+                    $tourModel->promotion1 = 'Y';
+                    $tourModel->promotion2 = 'N';
+                } elseif ($maxDiscount > 0 && $maxDiscount < 30) {
+                    // โปรธรรมดา
+                    $tourModel->promotion1 = 'N';
+                    $tourModel->promotion2 = 'Y';
+                } else {
+                    // ไม่มีโปร
+                    $tourModel->promotion1 = 'N';
+                    $tourModel->promotion2 = 'N';
+                }
+            } else {
+                // No periods with discount
+                $tourModel->promotion1 = 'N';
+                $tourModel->promotion2 = 'N';
+            }
+            
+            $tourModel->save();
             
             Log::info('GO365 periods processed', [
                 'tour_id' => $tourModel->id,
-                'period_count' => count($tourDetailData['tour_period'])
+                'period_count' => count($tourDetailData['tour_period']),
+                'price_group' => $tourModel->price_group,
+                'promotion1' => $tourModel->promotion1,
+                'promotion2' => $tourModel->promotion2
             ]);
             
         } catch (\Exception $e) {
@@ -2220,21 +2426,45 @@ class ApiManagementController extends Controller
             }
             
             Log::info('Super Holiday: All categories fetched', [
-                'total_tours' => count($allTours)
+                'total_records' => count($allTours)
             ]);
             
-            // Apply limit if specified
-            if ($limit > 0 && count($allTours) > $limit) {
-                $allTours = array_slice($allTours, 0, $limit);
+            // Super Holiday: Group records by mainid (1 tour = multiple periods)
+            // Each record in API response is 1 period, not 1 tour!
+            $tourGroups = [];
+            foreach ($allTours as $record) {
+                $mainid = $record['mainid'] ?? null;
+                if ($mainid) {
+                    if (!isset($tourGroups[$mainid])) {
+                        $tourGroups[$mainid] = [];
+                    }
+                    $tourGroups[$mainid][] = $record;
+                }
+            }
+            
+            Log::info('Super Holiday: Grouped records by tour', [
+                'total_records' => count($allTours),
+                'total_tours' => count($tourGroups)
+            ]);
+            
+            // Apply limit if specified (limit by tours, not records)
+            if ($limit > 0 && count($tourGroups) > $limit) {
+                $tourGroups = array_slice($tourGroups, 0, $limit, true);
                 Log::info('Super Holiday: Applied limit', [
-                    'limited_count' => count($allTours),
+                    'limited_tours' => count($tourGroups),
                     'limit' => $limit
                 ]);
             }
             
-            // Process tours
-            foreach ($allTours as $index => $tourData) {
+            // Process tours (each tour has multiple periods)
+            foreach ($tourGroups as $mainid => $periodRecords) {
                 try {
+                    // Use first record for tour data (all periods have same tour info)
+                    $tourData = $periodRecords[0];
+                    
+                    // Add all periods to tour data
+                    $tourData['periods'] = $periodRecords;
+                    
                     $result = $this->processTourData($provider, $tourData, $syncLog);
                     
                     if ($result['action'] === 'created') {
@@ -2249,7 +2479,7 @@ class ApiManagementController extends Controller
                     $errorCount++;
                     $errors[] = $e->getMessage();
                     Log::error('Super Holiday: Error processing tour', [
-                        'tour_index' => $index + 1,
+                        'mainid' => $mainid,
                         'error' => $e->getMessage()
                     ]);
                 }
@@ -2267,6 +2497,7 @@ class ApiManagementController extends Controller
                 'summary' => [
                     'total_categories' => count($categoryIds),
                     'total_records' => count($allTours),
+                    'total_tours' => count($tourGroups),
                     'created_tours' => $createdTours,
                     'duplicated_tours' => $duplicatedTours,
                     'error_count' => $errorCount,
@@ -2279,6 +2510,7 @@ class ApiManagementController extends Controller
                 'summary' => [
                     'total_categories' => count($categoryIds),
                     'total_records' => count($allTours),
+                    'total_tours' => count($tourGroups),
                     'created_tours' => $createdTours,
                     'duplicated_tours' => $duplicatedTours,
                     'error_count' => $errorCount
@@ -2364,11 +2596,25 @@ class ApiManagementController extends Controller
             }
         }
 
-        // ตรวจสอบว่ามีทัวร์นี้ในระบบแล้วหรือไม่ - ใช้ api_id เป็นมาตรฐานสำหรับทุก API
-        $existingTour = TourModel::where([
-            'api_id' => $apiId,
-            'api_type' => $provider->code
-        ])->whereNull('deleted_at')->first();
+        // ตรวจสอบว่ามีทัวร์นี้ในระบบแล้วหรือไม่
+        $existingTour = null;
+        
+        // For iTravel: Skip api_id check (column is integer but API sends string codes)
+        // Use code1 as primary identifier instead
+        if ($provider->code === 'itravel' || $provider->code === 'itravels') {
+            if (isset($tourData['code'])) {
+                $existingTour = TourModel::where([
+                    'code1' => $tourData['code'],
+                    'api_type' => $provider->code
+                ])->whereNull('deleted_at')->first();
+            }
+        } else {
+            // For other APIs: Use api_id as standard
+            $existingTour = TourModel::where([
+                'api_id' => $apiId,
+                'api_type' => $provider->code
+            ])->whereNull('deleted_at')->first();
+        }
         
         // For GO365, also check by tour_code to prevent duplicate constraint violations
         if (!$existingTour && $provider->code === 'go365' && isset($tourData['tour_code'])) {
@@ -2382,14 +2628,6 @@ class ApiManagementController extends Controller
         if (!$existingTour && ($provider->code === 'bestconsortium' || $provider->code === 'best') && isset($tourData['id'])) {
             $existingTour = TourModel::where([
                 'code1' => $tourData['id'],
-                'api_type' => $provider->code
-            ])->whereNull('deleted_at')->first();
-        }
-        
-        // For iTravel, check by code1 since api_id column is integer but iTravel uses string codes
-        if (!$existingTour && ($provider->code === 'itravel' || $provider->code === 'itravels') && isset($tourData['code'])) {
-            $existingTour = TourModel::where([
-                'code1' => $tourData['code'],
                 'api_type' => $provider->code
             ])->whereNull('deleted_at')->first();
         }
@@ -2467,8 +2705,11 @@ class ApiManagementController extends Controller
             $tourModel->wholesale_id = 35; // TTN Japan
         } elseif ($provider->code === 'go365') {
             $tourModel->wholesale_id = 41; // GO365
+        } elseif ($provider->code === 'superbholiday' || $provider->code === 'superb_holiday') {
+            $tourModel->wholesale_id = 22; // Super Holiday (ตาม headcode)
+            $tourModel->group_id = 3; // Super Holiday (ตาม headcode)
         } elseif ($provider->code === 'zego') {
-            $tourModel->wholesale_id = null; // Zego ไม่มี wholesale_id ตาย headcode
+            $tourModel->wholesale_id = null; // Zego ไม่มี wholesale_id ตาม headcode
         } elseif ($provider->code === 'best') {
             $tourModel->wholesale_id = null; // Best ไม่มี wholesale_id ตาม headcode
         }
@@ -2582,8 +2823,26 @@ class ApiManagementController extends Controller
             // Handle static value mappings (where api_field is empty)
             if (empty($mapping->api_field) && !empty($mapping->transformation_rules)) {
                 $rules = is_string($mapping->transformation_rules) ? json_decode($mapping->transformation_rules, true) : $mapping->transformation_rules;
-                if ($rules && isset($rules['static_value'])) {
-                    $tourModel->{$mapping->local_field} = $rules['static_value'];
+                
+                // Handle array of rules or single rule
+                if (is_array($rules)) {
+                    // Check if it's array of rules (has numeric keys)
+                    if (isset($rules[0]) && is_array($rules[0])) {
+                        foreach ($rules as $rule) {
+                            if (isset($rule['type']) && $rule['type'] === 'static_value' && isset($rule['value'])) {
+                                $tourModel->{$mapping->local_field} = $rule['value'];
+                                break;
+                            }
+                        }
+                    } else {
+                        // Single rule object
+                        if (isset($rules['type']) && $rules['type'] === 'static_value' && isset($rules['value'])) {
+                            $tourModel->{$mapping->local_field} = $rules['value'];
+                        } elseif (isset($rules['static_value'])) {
+                            // Legacy format
+                            $tourModel->{$mapping->local_field} = $rules['static_value'];
+                        }
+                    }
                     continue;
                 }
             }
@@ -2637,13 +2896,39 @@ class ApiManagementController extends Controller
                     } else {
                         $tourModel->country_id = '[]';
                     }
+                } elseif ($mapping->local_field === 'country_id' && $mapping->api_field === 'Country') {
+                    // Handle Super Holiday Country field - find by country_name_th (like headcode)
+                    if ($apiValue) {
+                        $country = \App\Models\Backend\CountryModel::where('country_name_th', 'like', '%' . $apiValue . '%')
+                            ->where('status', 'on')
+                            ->whereNull('deleted_at')
+                            ->first();
+                        
+                        if ($country) {
+                            $tourModel->country_id = json_encode([(string)$country->id]);
+                            
+                            Log::info('Super Holiday: Country mapped', [
+                                'country_name' => $apiValue,
+                                'country_id' => $country->id
+                            ]);
+                        } else {
+                            $tourModel->country_id = '[]';
+                        }
+                    }
                 } elseif ($mapping->local_field === 'country_id' && $mapping->api_field === 'tour_country') {
-                    // Handle GO365 tour_country array - extract country_id values
+                    // Handle GO365 tour_country array - use country_code_2 (iso2) like headcode
                     $countryIds = [];
                     if (is_array($apiValue)) {
                         foreach ($apiValue as $countryObj) {
-                            if (isset($countryObj['country_id'])) {
-                                $countryIds[] = (string)$countryObj['country_id'];
+                            if (isset($countryObj['country_code_2'])) {
+                                // Find country by iso2 code (more accurate than using country_id from API)
+                                $country = \App\Models\Backend\CountryModel::where('iso2', $countryObj['country_code_2'])
+                                    ->where('status', 'on')
+                                    ->whereNull('deleted_at')
+                                    ->first();
+                                if ($country) {
+                                    $countryIds[] = (string)$country->id;
+                                }
                             }
                         }
                     }
@@ -2691,6 +2976,32 @@ class ApiManagementController extends Controller
                     if ($airline) {
                         $tourModel->airline_id = $airline->id;
                     }
+                } elseif ($mapping->local_field === 'airline_id' && $mapping->api_field === 'aey') {
+                    // Handle Super Holiday aey field - extract code from "(CODE)" format
+                    // Example: "THAI AIRWAYS (TG)" -> "TG"
+                    if ($apiValue) {
+                        $code = null;
+                        if (preg_match('/\(([^)]+)\)/', $apiValue, $matches)) {
+                            $code = trim($matches[1]);
+                        }
+                        
+                        if ($code) {
+                            $airline = \App\Models\Backend\TravelTypeModel::where('code', $code)
+                                ->where('status', 'on')
+                                ->whereNull('deleted_at')
+                                ->first();
+                            
+                            if ($airline) {
+                                $tourModel->airline_id = $airline->id;
+                                
+                                Log::info('Super Holiday: Extracted airline code', [
+                                    'original_value' => $apiValue,
+                                    'extracted_code' => $code,
+                                    'airline_id' => $airline->id
+                                ]);
+                            }
+                        }
+                    }
                 } elseif ($mapping->local_field === 'airline_id' && $mapping->api_field === 'tour_airline') {
                     // Handle GO365 tour_airline object - extract airline_id
                     if (is_array($apiValue) && isset($apiValue['airline_id'])) {
@@ -2726,6 +3037,22 @@ class ApiManagementController extends Controller
                     
                     // Set value to model
                     $tourModel->{$mapping->local_field} = $processedValue;
+                }
+            }
+        }
+        
+        // Special handling for iTravel: Detect country from tour name (API doesn't provide country field)
+        if (($provider->code === 'itravel' || $provider->code === 'itravels') && !empty($tourData['name'])) {
+            // Skip if user already changed the country manually
+            if (!$isUpdating || $tourModel->country_check_change === null) {
+                $detectedCountries = \App\helpers\Helper::detectCountryFromName($tourData['name']);
+                if (!empty($detectedCountries)) {
+                    $tourModel->country_id = json_encode($detectedCountries);
+                    
+                    Log::info('iTravel country detected from name', [
+                        'tour_name' => $tourData['name'],
+                        'detected_countries' => $detectedCountries
+                    ]);
                 }
             }
         }
@@ -2836,7 +3163,7 @@ class ApiManagementController extends Controller
             switch ($rule['type'] ?? '') {
                 case 'static_value':
                     // For static values, ignore input and return the static value
-                    return $rule['static_value'] ?? $value;
+                    return $rule['value'] ?? $rule['static_value'] ?? $value;
                     break;
                 case 'string_replace':
                     $value = str_replace($rule['search'] ?? '', $rule['replace'] ?? '', $value);
@@ -3783,6 +4110,15 @@ class ApiManagementController extends Controller
 
     private function processPeriods($provider, $tourData, $tourModel)
     {
+        // Skip period processing for GO365 - periods are processed from detail endpoint only
+        if ($provider->code === 'go365') {
+            Log::info('Skipping processPeriods for GO365 - periods handled by processGO365Periods from detail endpoint', [
+                'provider' => $provider->code,
+                'tour_id' => $tourModel->id
+            ]);
+            return;
+        }
+        
         // Check if there are period mappings
         $periodMappings = $provider->fieldMappings()->where('field_type', 'period')->get();
         if ($periodMappings->isEmpty()) {
@@ -3957,7 +4293,22 @@ class ApiManagementController extends Controller
     {
         $periodMappings = $provider->fieldMappings()->where('field_type', 'period')->get();
         
-        $period = $this->createBasePeriod($provider, $tourModel);
+        // For Super Holiday: Check if period already exists by period_code (not period_api_id)
+        $existingPeriod = null;
+        if ($provider->code === 'superbholiday' || $provider->code === 'superb_holiday') {
+            $periodCodeValue = $periodData['pid'] ?? null;
+            if ($periodCodeValue) {
+                $existingPeriod = TourPeriodModel::where([
+                    'tour_id' => $tourModel->id,
+                    'period_code' => $periodCodeValue,
+                    'api_type' => $provider->code
+                ])
+                ->whereNull('deleted_at')
+                ->first();
+            }
+        }
+        
+        $period = $existingPeriod ?? $this->createBasePeriod($provider, $tourModel);
         
         // Debug log
         Log::info('createPeriodFromArray called', [
