@@ -853,7 +853,7 @@ class ApiManagementController extends Controller
             
             $totalRecords = count($allRecords);
             $totalTours = count($tourGroups);
-            $totalPeriods = $totalRecords; // Each record is 1 period
+            $totalPeriods = $totalRecords; // Each record is 1 periodหหหห
             
             $endTime = microtime(true);
             $responseTime = round(($endTime - $startTime), 3);
