@@ -410,7 +410,20 @@ class ApiManagementController extends Controller
                 return $this->testCheckinGroupConnection($provider, $startTime, $headers);
             }
             
-            $response = Http::withHeaders($headers)->timeout(30)->get($provider->url);
+            // GO365 requires POST with parameters to get all tours (default is only 20)
+            if ($provider->code === 'go365') {
+                $response = Http::withHeaders($headers)->timeout(30)->post($provider->url, [
+                    "search" => "",
+                    "country_id" => [],
+                    "start_page" => "1",
+                    "limit_page" => "300",
+                    "date_start" => "",
+                    "date_end" => "",
+                    "sort" => "price_min"
+                ]);
+            } else {
+                $response = Http::withHeaders($headers)->timeout(30)->get($provider->url);
+            }
             
             $endTime = microtime(true);
             $responseTime = round(($endTime - $startTime), 3);
@@ -1456,6 +1469,75 @@ class ApiManagementController extends Controller
                 }
             }
 
+            // Soft delete logic for Zego and Tour Factory (headcode behavior)
+            $apiTypesWithSoftDelete = ['zego', 'tourfactory', 'tour_factory'];
+            
+            if (in_array($provider->code, $apiTypesWithSoftDelete)) {
+                $syncedTourIds = [];
+                $syncedTourApiIds = [];
+                $syncedPeriodIds = [];
+                $syncedPeriodApiIds = [];
+                
+                $apiType = $provider->code === 'tour_factory' ? 'tourfactory' : $provider->code;
+                
+                $syncedTours = \App\Models\Backend\TourModel::where('api_type', $apiType)
+                    ->whereNull('deleted_at')
+                    ->get(['id', 'api_id']);
+                    
+                foreach ($syncedTours as $tour) {
+                    $syncedTourIds[] = $tour->id;
+                    if ($tour->api_id) {
+                        $syncedTourApiIds[] = $tour->api_id;
+                    }
+                    
+                    $periods = \App\Models\Backend\TourPeriodModel::where('tour_id', $tour->id)
+                        ->where('api_type', $apiType)
+                        ->whereNull('deleted_at')
+                        ->get(['id', 'period_api_id']);
+                        
+                    foreach ($periods as $period) {
+                        $syncedPeriodIds[] = $period->id;
+                        if ($period->period_api_id) {
+                            $syncedPeriodApiIds[] = $period->period_api_id;
+                        }
+                    }
+                }
+                
+                if (!empty($syncedTourIds) && !empty($syncedTourApiIds)) {
+                    \App\Models\Backend\TourModel::whereNotIn('id', $syncedTourIds)
+                        ->whereNotIn('api_id', $syncedTourApiIds)
+                        ->where('api_type', $apiType)
+                        ->whereNull('deleted_at')
+                        ->update(['deleted_at' => date('Y-m-d H:i:s')]);
+                        
+                    \App\Models\Backend\TourModel::whereIn('id', $syncedTourIds)
+                        ->whereIn('api_id', $syncedTourApiIds)
+                        ->where('api_type', $apiType)
+                        ->update(['deleted_at' => null]);
+                        
+                    Log::info($provider->code . ' tour soft delete completed', [
+                        'synced_tours' => count($syncedTourIds)
+                    ]);
+                }
+                
+                if (!empty($syncedPeriodIds) && !empty($syncedPeriodApiIds)) {
+                    \App\Models\Backend\TourPeriodModel::whereNotIn('id', $syncedPeriodIds)
+                        ->whereNotIn('period_api_id', $syncedPeriodApiIds)
+                        ->where('api_type', $apiType)
+                        ->whereNull('deleted_at')
+                        ->update(['deleted_at' => date('Y-m-d H:i:s')]);
+                        
+                    \App\Models\Backend\TourPeriodModel::whereIn('id', $syncedPeriodIds)
+                        ->whereIn('period_api_id', $syncedPeriodApiIds)
+                        ->where('api_type', $apiType)
+                        ->update(['deleted_at' => null]);
+                        
+                    Log::info($provider->code . ' period soft delete completed', [
+                        'synced_periods' => count($syncedPeriodIds)
+                    ]);
+                }
+            }
+
             // อัปเดตข้อมูลการซิงค์ลงในฐานข้อมูล
             $syncLog->update([
                 'status' => 'completed',
@@ -1503,7 +1585,21 @@ class ApiManagementController extends Controller
         
         // Step 1: Get list of IDs from main URL  
         $headers = $provider->headers ?? [];
-        $response = Http::withHeaders($headers)->timeout(120)->get($provider->url);
+        
+        // GO365 requires POST with parameters to get all tours (default is only 20)
+        if ($provider->code === 'go365') {
+            $response = Http::withHeaders($headers)->timeout(120)->post($provider->url, [
+                "search" => "",
+                "country_id" => [],
+                "start_page" => "1",
+                "limit_page" => "300",
+                "date_start" => "",
+                "date_end" => "",
+                "sort" => "price_min"
+            ]);
+        } else {
+            $response = Http::withHeaders($headers)->timeout(120)->get($provider->url);
+        }
         
         if (!$response->successful()) {
             throw new \Exception('Failed to get program IDs: ' . $response->status());
@@ -1724,24 +1820,28 @@ class ApiManagementController extends Controller
             }
         }
         
-        // Soft delete logic for GO365 (headcode lines 3808-3815)
-        if ($provider->code === 'go365') {
+        // Soft delete logic for all multi-step APIs (headcode behavior)
+        $apiTypesWithSoftDelete = ['go365', 'ttn', 'ttn_japan', 'ttn_all', 'itravel', 'itravels'];
+        
+        if (in_array($provider->code, $apiTypesWithSoftDelete)) {
             // Collect all tour/period IDs that were synced
             $syncedTourIds = [];
             $syncedTourApiIds = [];
             $syncedPeriodIds = [];
             $syncedPeriodApiIds = [];
             
-            $syncedTours = \App\Models\Backend\TourModel::where('api_type', 'go365')
+            $syncedTours = \App\Models\Backend\TourModel::where('api_type', $provider->code)
                 ->whereNull('deleted_at')
                 ->get(['id', 'api_id']);
                 
             foreach ($syncedTours as $tour) {
                 $syncedTourIds[] = $tour->id;
-                $syncedTourApiIds[] = $tour->api_id;
+                if ($tour->api_id) {
+                    $syncedTourApiIds[] = $tour->api_id;
+                }
                 
                 $periods = \App\Models\Backend\TourPeriodModel::where('tour_id', $tour->id)
-                    ->where('api_type', 'go365')
+                    ->where('api_type', $provider->code)
                     ->whereNull('deleted_at')
                     ->get(['id', 'period_api_id']);
                     
@@ -1757,17 +1857,17 @@ class ApiManagementController extends Controller
                 // Soft delete tours not in synced list (disappeared from API)
                 \App\Models\Backend\TourModel::whereNotIn('id', $syncedTourIds)
                     ->whereNotIn('api_id', $syncedTourApiIds)
-                    ->where('api_type', 'go365')
+                    ->where('api_type', $provider->code)
                     ->whereNull('deleted_at')
                     ->update(['deleted_at' => date('Y-m-d H:i:s')]);
                     
                 // Restore tours that are in synced list (returned to API)
                 \App\Models\Backend\TourModel::whereIn('id', $syncedTourIds)
                     ->whereIn('api_id', $syncedTourApiIds)
-                    ->where('api_type', 'go365')
+                    ->where('api_type', $provider->code)
                     ->update(['deleted_at' => null]);
                     
-                Log::info('GO365 tour soft delete completed', [
+                Log::info($provider->code . ' tour soft delete completed', [
                     'synced_tours' => count($syncedTourIds)
                 ]);
             }
@@ -1776,17 +1876,17 @@ class ApiManagementController extends Controller
                 // Soft delete periods not in synced list
                 \App\Models\Backend\TourPeriodModel::whereNotIn('id', $syncedPeriodIds)
                     ->whereNotIn('period_api_id', $syncedPeriodApiIds)
-                    ->where('api_type', 'go365')
+                    ->where('api_type', $provider->code)
                     ->whereNull('deleted_at')
                     ->update(['deleted_at' => date('Y-m-d H:i:s')]);
                     
                 // Restore periods that are in synced list
                 \App\Models\Backend\TourPeriodModel::whereIn('id', $syncedPeriodIds)
                     ->whereIn('period_api_id', $syncedPeriodApiIds)
-                    ->where('api_type', 'go365')
+                    ->where('api_type', $provider->code)
                     ->update(['deleted_at' => null]);
                     
-                Log::info('GO365 period soft delete completed', [
+                Log::info($provider->code . ' period soft delete completed', [
                     'synced_periods' => count($syncedPeriodIds)
                 ]);
             }
@@ -2317,6 +2417,69 @@ class ApiManagementController extends Controller
                 }
             }
             
+            // Soft delete logic for Best Consortium (headcode behavior)
+            $syncedTourIds = [];
+            $syncedTourApiIds = [];
+            $syncedPeriodIds = [];
+            $syncedPeriodApiIds = [];
+            
+            $syncedTours = \App\Models\Backend\TourModel::where('api_type', 'best')
+                ->whereNull('deleted_at')
+                ->get(['id', 'api_id']);
+                
+            foreach ($syncedTours as $tour) {
+                $syncedTourIds[] = $tour->id;
+                if ($tour->api_id) {
+                    $syncedTourApiIds[] = $tour->api_id;
+                }
+                
+                $periods = \App\Models\Backend\TourPeriodModel::where('tour_id', $tour->id)
+                    ->where('api_type', 'best')
+                    ->whereNull('deleted_at')
+                    ->get(['id', 'period_api_id']);
+                    
+                foreach ($periods as $period) {
+                    $syncedPeriodIds[] = $period->id;
+                    if ($period->period_api_id) {
+                        $syncedPeriodApiIds[] = $period->period_api_id;
+                    }
+                }
+            }
+            
+            if (!empty($syncedTourIds) && !empty($syncedTourApiIds)) {
+                \App\Models\Backend\TourModel::whereNotIn('id', $syncedTourIds)
+                    ->whereNotIn('api_id', $syncedTourApiIds)
+                    ->where('api_type', 'best')
+                    ->whereNull('deleted_at')
+                    ->update(['deleted_at' => date('Y-m-d H:i:s')]);
+                    
+                \App\Models\Backend\TourModel::whereIn('id', $syncedTourIds)
+                    ->whereIn('api_id', $syncedTourApiIds)
+                    ->where('api_type', 'best')
+                    ->update(['deleted_at' => null]);
+                    
+                Log::info('Best Consortium tour soft delete completed', [
+                    'synced_tours' => count($syncedTourIds)
+                ]);
+            }
+            
+            if (!empty($syncedPeriodIds) && !empty($syncedPeriodApiIds)) {
+                \App\Models\Backend\TourPeriodModel::whereNotIn('id', $syncedPeriodIds)
+                    ->whereNotIn('period_api_id', $syncedPeriodApiIds)
+                    ->where('api_type', 'best')
+                    ->whereNull('deleted_at')
+                    ->update(['deleted_at' => date('Y-m-d H:i:s')]);
+                    
+                \App\Models\Backend\TourPeriodModel::whereIn('id', $syncedPeriodIds)
+                    ->whereIn('period_api_id', $syncedPeriodApiIds)
+                    ->where('api_type', 'best')
+                    ->update(['deleted_at' => null]);
+                    
+                Log::info('Best Consortium period soft delete completed', [
+                    'synced_periods' => count($syncedPeriodIds)
+                ]);
+            }
+            
             // Update sync log
             $syncLog->update([
                 'status' => 'completed',
@@ -2483,6 +2646,70 @@ class ApiManagementController extends Controller
                         'error' => $e->getMessage()
                     ]);
                 }
+            }
+            
+            // Soft delete logic for Super Holiday (headcode behavior)
+            $syncedTourIds = [];
+            $syncedTourApiIds = [];
+            $syncedPeriodIds = [];
+            $syncedPeriodCodes = [];
+            
+            $syncedTours = \App\Models\Backend\TourModel::where('api_type', 'superbholiday')
+                ->whereNull('deleted_at')
+                ->get(['id', 'api_id']);
+                
+            foreach ($syncedTours as $tour) {
+                $syncedTourIds[] = $tour->id;
+                if ($tour->api_id) {
+                    $syncedTourApiIds[] = $tour->api_id;
+                }
+                
+                // Super Holiday uses period_code instead of period_api_id
+                $periods = \App\Models\Backend\TourPeriodModel::where('tour_id', $tour->id)
+                    ->where('api_type', 'superbholiday')
+                    ->whereNull('deleted_at')
+                    ->get(['id', 'period_code']);
+                    
+                foreach ($periods as $period) {
+                    $syncedPeriodIds[] = $period->id;
+                    if ($period->period_code) {
+                        $syncedPeriodCodes[] = $period->period_code;
+                    }
+                }
+            }
+            
+            if (!empty($syncedTourIds) && !empty($syncedTourApiIds)) {
+                \App\Models\Backend\TourModel::whereNotIn('id', $syncedTourIds)
+                    ->whereNotIn('api_id', $syncedTourApiIds)
+                    ->where('api_type', 'superbholiday')
+                    ->whereNull('deleted_at')
+                    ->update(['deleted_at' => date('Y-m-d H:i:s')]);
+                    
+                \App\Models\Backend\TourModel::whereIn('id', $syncedTourIds)
+                    ->whereIn('api_id', $syncedTourApiIds)
+                    ->where('api_type', 'superbholiday')
+                    ->update(['deleted_at' => null]);
+                    
+                Log::info('Super Holiday tour soft delete completed', [
+                    'synced_tours' => count($syncedTourIds)
+                ]);
+            }
+            
+            if (!empty($syncedPeriodIds) && !empty($syncedPeriodCodes)) {
+                \App\Models\Backend\TourPeriodModel::whereNotIn('id', $syncedPeriodIds)
+                    ->whereNotIn('period_code', $syncedPeriodCodes)
+                    ->where('api_type', 'superbholiday')
+                    ->whereNull('deleted_at')
+                    ->update(['deleted_at' => date('Y-m-d H:i:s')]);
+                    
+                \App\Models\Backend\TourPeriodModel::whereIn('id', $syncedPeriodIds)
+                    ->whereIn('period_code', $syncedPeriodCodes)
+                    ->where('api_type', 'superbholiday')
+                    ->update(['deleted_at' => null]);
+                    
+                Log::info('Super Holiday period soft delete completed', [
+                    'synced_periods' => count($syncedPeriodIds)
+                ]);
             }
             
             // Update sync log
@@ -4293,14 +4520,52 @@ class ApiManagementController extends Controller
     {
         $periodMappings = $provider->fieldMappings()->where('field_type', 'period')->get();
         
-        // For Super Holiday: Check if period already exists by period_code (not period_api_id)
+        // Check if period already exists (like headcode)
         $existingPeriod = null;
+        
         if ($provider->code === 'superbholiday' || $provider->code === 'superb_holiday') {
+            // Super Holiday: Check by period_code
             $periodCodeValue = $periodData['pid'] ?? null;
             if ($periodCodeValue) {
                 $existingPeriod = TourPeriodModel::where([
                     'tour_id' => $tourModel->id,
                     'period_code' => $periodCodeValue,
+                    'api_type' => $provider->code
+                ])
+                ->whereNull('deleted_at')
+                ->first();
+            }
+        } else {
+            // All other APIs: Check by period_api_id
+            $periodApiId = null;
+            
+            // Extract period_api_id based on API structure
+            if ($provider->code === 'go365') {
+                $periodApiId = $periodData['tour_period_id'] ?? null;
+            } elseif ($provider->code === 'zego') {
+                $periodApiId = $periodData['PeriodID'] ?? null;
+            } elseif ($provider->code === 'best' || $provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
+                $periodApiId = $periodData['pid'] ?? null;
+            } elseif ($provider->code === 'ttn' || $provider->code === 'ttn_japan') {
+                $periodApiId = $periodData['P_ID'] ?? null;
+            } elseif ($provider->code === 'ttn_all') {
+                $periodApiId = $periodData['P_ID'] ?? null;
+            } elseif ($provider->code === 'itravel' || $provider->code === 'itravels') {
+                $periodApiId = $periodData['id'] ?? null;
+            } elseif ($provider->code === 'tourfactory' || $provider->code === 'tour_factory') {
+                $periodApiId = $periodData['id'] ?? null;
+            } else {
+                // Generic: Try to find period_api_id from field mappings
+                $periodApiIdMapping = $periodMappings->firstWhere('local_field', 'period_api_id');
+                if ($periodApiIdMapping && !empty($periodApiIdMapping->api_field)) {
+                    $periodApiId = data_get($periodData, $periodApiIdMapping->api_field);
+                }
+            }
+            
+            if ($periodApiId) {
+                $existingPeriod = TourPeriodModel::where([
+                    'tour_id' => $tourModel->id,
+                    'period_api_id' => $periodApiId,
                     'api_type' => $provider->code
                 ])
                 ->whereNull('deleted_at')

@@ -3433,7 +3433,15 @@ class ApiController extends Controller
                 "Content-Type" => "application/json",
                 "x-api-key" => env('GO365_API_KEY'),
             ])
-            ->get('https://api.kaikongservice.com/api/v1/tours/search');
+            ->post('https://api.kaikongservice.com/api/v1/tours/search', [
+                "search" => "",
+                "country_id" => [],
+                "start_page" => "1",
+                "limit_page" => "300",
+                "date_start" => "",
+                "date_end" => "",
+                "sort" => "price_min"
+            ]);
 
             if($response->successful()){
 
