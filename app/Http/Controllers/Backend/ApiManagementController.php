@@ -1583,27 +1583,28 @@ class ApiManagementController extends Controller
     {
         Log::info('Starting multi-step sync', ['provider' => $provider->name]);
         
-        // Step 1: Get list of IDs from main URL  
-        $headers = $provider->headers ?? [];
-        
-        // GO365 requires POST with parameters to get all tours (default is only 20)
-        if ($provider->code === 'go365') {
-            $response = Http::withHeaders($headers)->timeout(120)->post($provider->url, [
-                "search" => "",
-                "country_id" => [],
-                "start_page" => "1",
-                "limit_page" => "300",
-                "date_start" => "",
-                "date_end" => "",
-                "sort" => "price_min"
-            ]);
-        } else {
-            $response = Http::withHeaders($headers)->timeout(120)->get($provider->url);
-        }
-        
-        if (!$response->successful()) {
-            throw new \Exception('Failed to get program IDs: ' . $response->status());
-        }
+        try {
+            // Step 1: Get list of IDs from main URL  
+            $headers = $provider->headers ?? [];
+            
+            // GO365 requires POST with parameters to get all tours (default is only 20)
+            if ($provider->code === 'go365') {
+                $response = Http::withHeaders($headers)->timeout(120)->post($provider->url, [
+                    "search" => "",
+                    "country_id" => [],
+                    "start_page" => "1",
+                    "limit_page" => "300",
+                    "date_start" => "",
+                    "date_end" => "",
+                    "sort" => "price_min"
+                ]);
+            } else {
+                $response = Http::withHeaders($headers)->timeout(120)->get($provider->url);
+            }
+            
+            if (!$response->successful()) {
+                throw new \Exception('Failed to get program IDs: ' . $response->status());
+            }
         
         $responseData = $response->json();
         
@@ -1921,6 +1922,24 @@ class ApiManagementController extends Controller
                 'error_count' => $errorCount
             ]
         ];
+        
+        } catch (\Exception $e) {
+            // Handle fatal errors that stop the entire sync
+            Log::error('Multi-step sync failed', [
+                'provider' => $provider->name,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            $syncLog->update([
+                'status' => 'failed',
+                'completed_at' => now(),
+                'error_count' => 1,
+                'error_message' => $e->getMessage()
+            ]);
+            
+            throw $e; // Re-throw to be caught by caller
+        }
     }
 
     private function processPeriodsFromConfig($provider, $tourModel, $programId)
@@ -3272,7 +3291,7 @@ class ApiManagementController extends Controller
         if (($provider->code === 'itravel' || $provider->code === 'itravels') && !empty($tourData['name'])) {
             // Skip if user already changed the country manually
             if (!$isUpdating || $tourModel->country_check_change === null) {
-                $detectedCountries = \App\helpers\Helper::detectCountryFromName($tourData['name']);
+                $detectedCountries = \App\Helpers\Helper::detectCountryFromName($tourData['name']);
                 if (!empty($detectedCountries)) {
                     $tourModel->country_id = json_encode($detectedCountries);
                     
