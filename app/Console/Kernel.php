@@ -53,9 +53,8 @@ class Kernel extends ConsoleKernel
                     ]);
                 
                 try {
-                    // Get provider
-                    $provider = \DB::table('tb_api_providers')
-                        ->where('id', $schedule->api_provider_id)
+                    // Get provider using Model (not DB query) for proper relationship handling
+                    $provider = \App\Models\Backend\ApiProviderModel::where('id', $schedule->api_provider_id)
                         ->first();
                     
                     if ($provider && $provider->status === 'active') {
