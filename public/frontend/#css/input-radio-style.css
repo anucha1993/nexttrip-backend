@@ -1,0 +1,144 @@
+.md-radio.md-radio-inline {
+  display: block;
+    margin-top: 10px;
+    border-bottom: 1px solid #eee;
+    padding: 5px 0px;
+}
+.md-radio input[type="radio"] {
+  display: none;
+}
+.md-radio input[type="radio"]:checked + label:before {
+  border-color:#626262;
+  animation: ripple 0.2s linear forwards;
+    background-color: transparent;
+}
+.md-radio input[type="radio"]:checked + label:after {
+  transform: scale(1);
+}
+.md-radio label {
+  display: block;
+  height: 20px;
+  position: relative;
+  padding: 0 30px;
+  margin-bottom: 0;
+  cursor: pointer;
+  vertical-align: bottom;
+    margin-left: 15px;
+}
+.md-radio label:before, .md-radio label:after {
+  position: absolute;
+  content: '';
+  border-radius: 50%;
+  transition: all .3s ease;
+  transition-property: transform, border-color;
+}
+.md-radio label:before {
+  left: 0;
+  top: 0;
+  width: 20px;
+  height: 20px;
+  border: 2px solid #626262;
+}
+.md-radio label:after {
+  top: 5px;
+  left: 5px;
+  width: 10px;
+  height: 10px;
+  transform: scale(0);
+  background: #626262;
+}    
+
+.accordion {
+    margin-top: 20px;
+    position: relative;
+}
+
+.accordion section,
+.accordion input:checked~section {
+    -webkit-transition: max-height 0.3s, opacity 0.5s ease-out, border 0.1s ease-out;
+    transition: max-height 0.3s, opacity 0.5s ease-out, border 0.1s ease-out;
+}
+
+.accordion label:after,
+.accordion input:checked+label:after {
+    -webkit-transition: -webkit-transform 0.3s ease-out;
+    transition: -webkit-transform 0.3s ease-out;
+    transition: transform 0.3s ease-out;
+    transition: transform 0.3s ease-out, -webkit-transform 0.3s ease-out;
+}
+
+.accordion label {
+    position: relative;
+    cursor: pointer;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.accordion section {
+    max-height: 0;
+    overflow: hidden;
+    opacity: 0;
+    border-bottom: 1px solid #ebebeb;
+    margin-bottom: 10px;
+}
+
+.accordion input {
+    display: block;
+}
+
+.accordion input:checked+label {
+    border-bottom: none;
+    margin-bottom: 0;
+}
+
+.accordion input:checked+label:after {
+    -webkit-transform: rotate(-135deg);
+    transform: rotate(-135deg);
+}
+
+.accordion input:checked~section {
+    margin-bottom: 3px;
+    max-height: 1000px;
+    opacity: 1;
+    border-bottom: none;
+}
+
+.address {
+    margin-top: -30px;
+    margin-left: 35px;
+}
+
+.styleRad,
+.styethis2,
+.styethis{
+	font-weight: 500;
+  color:#626262;
+  position: relative;
+  font-size: 0.9rem;
+}
+.styethis img{
+  position: absolute;
+  margin-left: 10px;
+}
+.styethis2 img{
+  position: absolute;
+  margin-left: 10px;
+  width: 180px;
+  margin-top: -6px;
+}
+
+
+@media only screen and (max-width: 767px) {
+  .styethis2 img{
+    position: absolute;
+    margin-left: 10px;
+    width: 150px;
+  
+  }
+    .accordion label{
+        font-size: 0.9rem;
+            vertical-align: text-bottom;
+        
+    }
+
+}
