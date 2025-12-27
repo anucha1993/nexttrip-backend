@@ -242,7 +242,6 @@ class TourController extends Controller
                 if (@$like['search_tag_promotion'] != "") {
                     $query->where('tb_tour_period.promotion_id', $like['search_tag_promotion'] );
                 }
-                
                 // if (@$like['search_city'] != "") {
                 //     if (@$like['search_city'] != "") {
                 //         $arr = array();
@@ -256,7 +255,6 @@ class TourController extends Controller
                 //         $query->where('province_id', 'like', '%"' . $arr['PRO'][0] . '"%');
                 //     }
                 // }
-
                 if (@$like['search_type'] != "") {
                     $query->where('tb_tour.type_id', $like['search_type'] );
                 }
@@ -289,13 +287,13 @@ class TourController extends Controller
                 $data .= "<p><b>$row->code1</b></p><br>";
             }
             // ICON: แหล่งที่มา
-            if(isset($row->api_id)) {
-                 $data .= '<span title="ข้อมูลกรอกเอง" style="color:#b967fc;font-size:16px;"> Manual-</span> ';
-                    
+            if(isset($row->data_type)) {
+                if($row->data_type == 2) {
+                    $data .= '<span title="ข้อมูลจาก API" style="color:#21f39c;font-size:16px;"> API -</span> ';
                 } else {
-                   $data .= '<span title="ข้อมูลจาก API" style="color:#21f39c;font-size:16px;"> API -</span> ';
+                    $data .= '<span title="ข้อมูลกรอกเอง" style="color:#b967fc;font-size:16px;"> Manual-</span> ';
                 }
-            
+            }
             $data .= "<a href='$this->segment/$this->folder/edit/$row->id' style='text-decoration: underline; color:#0283df;'>".$row->name."</a><br><br>";
             if($row->pdf_file || $row->word_file){
                 $data .= "เอกสารโปรแกรมทัวร์<br>";
@@ -313,12 +311,6 @@ class TourController extends Controller
             $city_select = json_decode($row->city_id,true); 
             $province_select = json_decode($row->province_id,true);
             $district_select = json_decode($row->district_id,true);
-
-            // Validate decoded values (fix for Best Consortium API)
-            $country_select = is_array($country_select) ? $country_select : [];
-            $city_select = is_array($city_select) ? $city_select : [];
-            $province_select = is_array($province_select) ? $province_select : [];
-            $district_select = is_array($district_select) ? $district_select : [];
 
             $country_sel = CountryModel::whereIn('id',$country_select)->get();
             $city_sel = CityModel::whereIn('id',$city_select)->get();
@@ -390,7 +382,6 @@ class TourController extends Controller
         })
         ->editColumn('status', function ($row) {
             $status = "";
-
             if($row->status == "on")
             {
                 $status = "checked";
@@ -400,14 +391,12 @@ class TourController extends Controller
                     </div>";
             return $data;
         })
-
         ->editColumn('tab_status', function ($row) {
             $tab_status = "";
             if($row->tab_status == "on")
             {
                 $tab_status = "checked";
             }
-
             $data = "<div class='form-check form-switch w-full sm:w-auto sm:ml-auto mt-3 sm:mt-0'>
                         <input id='tab_status_change_$row->id' data-id='$row->id' onclick='tab_status($row->id);' class='show-code form-check-input mr-0 ml-3' type='checkbox' $tab_status>
                     </div>";
