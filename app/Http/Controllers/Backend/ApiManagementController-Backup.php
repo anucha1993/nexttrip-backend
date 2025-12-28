@@ -2871,11 +2871,18 @@ class ApiManagementController extends Controller
         }
         
         // For Best Consortium, also check by code1 (tour code from API) to prevent duplicate constraint violations
-        if (!$existingTour && ($provider->code === 'bestconsortium' || $provider->code === 'best') && isset($tourData['id'])) {
+        if (!$existingTour && ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium' || $provider->code === 'best') && isset($tourData['id'])) {
             $existingTour = TourModel::where([
-                'code1' => $tourData['id'],
-                'api_type' => $provider->code
+                'code1' => trim($tourData['id']),  // Trim whitespace to handle data inconsistencies
+                'api_type' => 'best'  // Use 'best' consistently for api_type
             ])->whereNull('deleted_at')->first();
+            
+            Log::info('Best Consortium: Checking existing tour by code1', [
+                'provider_code' => $provider->code,
+                'tour_code1' => trim($tourData['id']),
+                'existing_tour_found' => $existingTour ? 'YES' : 'NO',
+                'existing_tour_id' => $existingTour ? $existingTour->id : null
+            ]);
         }
 
         if ($existingTour) {
@@ -2956,8 +2963,8 @@ class ApiManagementController extends Controller
             $tourModel->group_id = 3; // Super Holiday (ตาม headcode)
         } elseif ($provider->code === 'zego') {
             $tourModel->wholesale_id = null; // Zego ไม่มี wholesale_id ตาม headcode
-        } elseif ($provider->code === 'best') {
-            $tourModel->wholesale_id = null; // Best ไม่มี wholesale_id ตาม headcode
+        } elseif ($provider->code === 'best' || $provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
+            $tourModel->wholesale_id = 11; // Best Consortium wholesale_id
         }
         
         // Map fields จาก API data using database mappings (including static values like api_type, data_type)
@@ -3003,15 +3010,46 @@ class ApiManagementController extends Controller
             // Handle duplicate constraint violations
             if ($e->getCode() == 23000 && strpos($e->getMessage(), 'Duplicate entry') !== false) {
                 // Try to find the existing tour again (might have been created by another process)
-                $existingTour = TourModel::where([
-                    'code1' => $tourData['tour_code'] ?? '',
-                    'api_type' => $provider->code
-                ])->orWhere([
-                    'api_id' => $apiId,
-                    'api_type' => $provider->code
-                ])->whereNull('deleted_at')->first();
+                // Use appropriate code field based on API provider
+                $codeField = '';
+                if ($provider->code === 'go365' && isset($tourData['tour_code'])) {
+                    $codeField = trim($tourData['tour_code']);
+                } elseif (($provider->code === 'bestconsortium' || $provider->code === 'best_consortium' || $provider->code === 'best') && isset($tourData['id'])) {
+                    $codeField = trim($tourData['id']);
+                } elseif (isset($tourData['code'])) {
+                    $codeField = trim($tourData['code']);
+                } elseif (isset($tourData['tour_code'])) {
+                    $codeField = trim($tourData['tour_code']);
+                }
+                
+                $existingTour = null;
+                if (!empty($codeField)) {
+                    $apiTypeToCheck = 'best'; // Use consistent api_type for Best Consortium
+                    if ($provider->code === 'go365') {
+                        $apiTypeToCheck = 'go365';
+                    } elseif ($provider->code === 'ttn') {
+                        $apiTypeToCheck = 'ttn';
+                    } elseif ($provider->code === 'zego') {
+                        $apiTypeToCheck = 'zego';
+                    }
+                    
+                    $existingTour = TourModel::where([
+                        'code1' => $codeField,
+                        'api_type' => $apiTypeToCheck
+                    ])->orWhere([
+                        'api_id' => $apiId,
+                        'api_type' => $apiTypeToCheck
+                    ])->whereNull('deleted_at')->first();
+                }
                 
                 if ($existingTour) {
+                    Log::info('Duplicate constraint handled - found existing tour', [
+                        'provider' => $provider->code,
+                        'existing_tour_id' => $existingTour->id,
+                        'code1' => $codeField,
+                        'api_id' => $apiId
+                    ]);
+                    
                     // Log as duplicate
                     TourDuplicateModel::create([
                         'api_provider_id' => $provider->id,
@@ -3025,6 +3063,16 @@ class ApiManagementController extends Controller
                     return ['action' => 'duplicated', 'tour_id' => $existingTour->id, 'tour_model' => $existingTour];
                 }
             }
+            
+            // Log the specific error for debugging
+            Log::error('Tour save error (not duplicate constraint)', [
+                'provider' => $provider->code,
+                'error_code' => $e->getCode(),
+                'error_message' => $e->getMessage(),
+                'api_id' => $apiId,
+                'code1' => $tourModel->code1 ?? 'N/A',
+                'tour_data_sample' => array_slice($tourData, 0, 10, true)
+            ]);
             
             // Re-throw if not a duplicate constraint violation or couldn't find existing tour
             throw $e;
@@ -3272,6 +3320,11 @@ class ApiManagementController extends Controller
                     
                     // Handle different data types
                     $processedValue = $this->processFieldValue($apiValue, $mapping->data_type ?? 'string');
+                    
+                    // Trim whitespace for code1 field to prevent duplicate constraint violations
+                    if ($mapping->local_field === 'code1' && is_string($processedValue)) {
+                        $processedValue = trim($processedValue);
+                    }
                     
                     // Debug log
                     Log::info('Mapping field', [

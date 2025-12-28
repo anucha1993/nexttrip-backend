@@ -84,25 +84,19 @@
                                                     @if($lastSync->status === 'completed') bg-green-100 text-green-700
                                                     @elseif($lastSync->status === 'failed') bg-red-100 text-red-700
                                                     @elseif($lastSync->status === 'running') bg-blue-100 text-blue-700
-                                                    @elseif($lastSync->status === 'queued') bg-yellow-100 text-yellow-700
                                                     @else bg-gray-100 text-gray-700
-                                                    @endif" data-status="{{ $lastSync->status }}">
+                                                    @endif">
                                                     @if($lastSync->status === 'completed') ✅ Success
                                                     @elseif($lastSync->status === 'failed') ❌ Failed
                                                     @elseif($lastSync->status === 'running') 🔄 Running
-                                                    @elseif($lastSync->status === 'queued') ⏳ Queued
                                                     @else 📋 {{ ucfirst($lastSync->status) }}
                                                     @endif
                                                 </span>
                                             </div>
-                                            <div class="grid grid-cols-4 gap-2 mt-2 text-xs">
+                                            <div class="grid grid-cols-3 gap-2 mt-2 text-xs">
                                                 <div class="text-center p-1 bg-green-50 rounded">
                                                     <div class="font-medium text-green-700">{{ $lastSync->created_tours ?? 0 }}</div>
                                                     <div class="text-green-600">Created</div>
-                                                </div>
-                                                <div class="text-center p-1 bg-blue-50 rounded">
-                                                    <div class="font-medium text-blue-700">{{ $lastSync->updated_tours ?? 0 }}</div>
-                                                    <div class="text-blue-600">Updated</div>
                                                 </div>
                                                 <div class="text-center p-1 bg-yellow-50 rounded">
                                                     <div class="font-medium text-yellow-700">{{ $lastSync->duplicated_tours ?? 0 }}</div>
@@ -174,12 +168,12 @@
                                     <a href="{{ route('api-management.logs', $provider->id) }}" class="btn btn-outline-warning btn-sm mr-1" title="View Logs">
                                         <i data-lucide="file-text" class="w-4 h-4"></i>
                                     </a>
-                                    {{-- <a href="{{ route('api-management.duplicates', $provider->id) }}" class="btn btn-outline-danger btn-sm mr-1" title="View Duplicates">
+                                    <a href="{{ route('api-management.duplicates', $provider->id) }}" class="btn btn-outline-danger btn-sm mr-1" title="View Duplicates">
                                         <i data-lucide="copy" class="w-4 h-4"></i>
                                         @if($provider->duplicates()->where('status', 'pending')->count() > 0)
                                             <span class="ml-1 bg-red-500 text-white rounded-full px-1 text-xs">{{ $provider->duplicates()->where('status', 'pending')->count() }}</span>
                                         @endif
-                                    </a> --}}
+                                    </a>
                                     <div class="dropdown ml-auto">
                                         <button class="dropdown-toggle btn btn-outline-secondary btn-sm" aria-expanded="false" data-tw-toggle="dropdown">
                                             <i data-lucide="more-horizontal" class="w-4 h-4"></i>
@@ -196,7 +190,6 @@
                                                     <i data-lucide="{{ $provider->status === 'active' ? 'pause' : 'play' }}" class="w-4 h-4 mr-2"></i> 
                                                     {{ $provider->status === 'active' ? 'Deactivate' : 'Activate' }}
                                                 </button>
-
                                                 <div class="dropdown-divider"></div>
                                                 <button onclick="deleteProvider({{ $provider->id }})" class="dropdown-item text-danger w-full text-left">
                                                     <i data-lucide="trash-2" class="w-4 h-4 mr-2"></i> Delete
@@ -317,16 +310,10 @@
                 confirmButtonText: 'Yes, Start Sync!'
             }).then((result) => {
                 if (result.isConfirmed) {
-                    // Show brief loading
-                    Swal.fire({
-                        title: 'Starting Sync...',
-                        text: 'Please wait',
-                        icon: 'info',
-                        timer: 1500,
-                        showConfirmButton: false
-                    });
+                    const modal = tailwind.Modal.getOrCreateInstance(document.querySelector("#loading-modal"));
+                    modal.show();
                     
-                    fetch(`/webpanel/api-management/${providerId}/sync-manual-async`, {
+                    fetch(`/webpanel/api-management/${providerId}/sync-manual`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
@@ -335,202 +322,43 @@
                     })
                     .then(response => response.json())
                     .then(data => {
+                        modal.hide();
                         if (data.success) {
-                            // Show completion result based on status
-                            if (data.status === 'completed') {
-                                Swal.fire({
-                                    icon: 'success',
-                                    title: 'Manual Sync Completed!',
-                                    html: `
-                                        <div class="text-left">
-                                            <p><strong>API:</strong> ${data.provider_name}</p>
-                                            <p><strong>Status:</strong> ✅ Completed Successfully</p>
-                                        </div>
-                                    `,
-                                    confirmButtonText: 'View Details',
-                                    timer: 4000
-                                }).then(() => {
-                                    location.reload();
-                                });
-                            } else {
-                                // For other statuses (queued, running)
-                                Swal.fire({
-                                    icon: 'info',
-                                    title: 'Sync Started!',
-                                    html: `
-                                        <div class="text-left">
-                                            <p><strong>API:</strong> ${data.provider_name}</p>
-                                            <p><strong>Status:</strong> Processing</p>
-                                        </div>
-                                    `,
-                                    confirmButtonText: 'OK',
-                                    timer: 3000
-                                }).then(() => {
-                                    location.reload();
-                                });
-                            }
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Sync Completed!',
+                                html: `
+                                    <div class="text-left">
+                                        <p><strong>Total Records:</strong> ${data.summary.total_records}</p>
+                                        <p><strong>Created Tours:</strong> ${data.summary.created_tours}</p>
+                                        <p><strong>Duplicated Tours:</strong> ${data.summary.duplicated_tours}</p>
+                                        <p><strong>Errors:</strong> ${data.summary.error_count}</p>
+                                    </div>
+                                `,
+                                confirmButtonText: 'OK'
+                            }).then(() => {
+                                location.reload();
+                            });
                         } else {
                             Swal.fire({
                                 icon: 'error',
-                                title: 'Failed to Start Sync',
+                                title: 'Sync Failed!',
                                 text: data.message,
                                 confirmButtonText: 'OK'
                             });
                         }
                     })
                     .catch(error => {
+                        modal.hide();
                         Swal.fire({
                             icon: 'error',
                             title: 'Error!',
-                            text: 'An error occurred while starting sync.',
+                            text: 'An error occurred during sync.',
                             confirmButtonText: 'OK'
                         });
                     });
                 }
             });
-        }
-
-        // Enhanced monitor sync progress function
-        function monitorSyncProgress(syncLogId, providerId) {
-            let checkCount = 0;
-            const maxChecks = 200; // Maximum 200 checks (10 minutes at 3-second intervals)
-            
-            const checkInterval = setInterval(() => {
-                checkCount++;
-                
-                fetch(`/webpanel/api-management/sync-status/${syncLogId}`, {
-                    method: 'GET',
-                    headers: {
-                        'Accept': 'application/json',
-                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
-                    }
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        console.log(`Sync ${syncLogId} status:`, data.status, `(check ${checkCount})`);
-                        
-                        // Check if sync is stale (stuck)
-                        if (data.is_stale) {
-                            clearInterval(checkInterval);
-                            Swal.fire({
-                                icon: 'warning',
-                                title: 'Sync May Be Stuck',
-                                html: `
-                                    <div class="text-left">
-                                        <p>Sync has been running for over 10 minutes.</p>
-                                        <p><strong>Status:</strong> ${data.status}</p>
-                                        <p><strong>Duration:</strong> ${Math.floor(data.duration / 60)} minutes</p>
-                                        <p class="mt-2 text-sm text-orange-600">Please check the logs or contact administrator.</p>
-                                    </div>
-                                `,
-                                confirmButtonText: 'Check Logs',
-                                showCancelButton: true,
-                                cancelButtonText: 'Close'
-                            }).then((result) => {
-                                if (result.isConfirmed) {
-                                    window.open(`/webpanel/api-management/${providerId}/logs`, '_blank');
-                                }
-                                location.reload();
-                            });
-                            return;
-                        }
-                        
-                        // Check if sync is completed or failed
-                        if (data.status === 'completed' || data.status === 'failed') {
-                            clearInterval(checkInterval);
-                            
-                            // Show completion notification
-                            if (data.status === 'completed') {
-                                Swal.fire({
-                                    icon: 'success',
-                                    title: 'Sync Completed Successfully!',
-                                    html: `
-                                        <div class="text-left">
-                                            <p><strong>Provider:</strong> ${data.provider_name}</p>
-                                            <p><strong>Duration:</strong> ${data.duration ? Math.floor(data.duration / 60) + 'm ' + (data.duration % 60) + 's' : 'N/A'}</p>
-                                            <hr class="my-2">
-                                            <p><strong>📈 Created:</strong> ${data.created_tours}</p>
-                                            <p><strong>🔄 Updated:</strong> ${data.updated_tours}</p>
-                                            <p><strong>📋 Duplicated:</strong> ${data.duplicated_tours}</p>
-                                            <p><strong>❌ Errors:</strong> ${data.error_count}</p>
-                                        </div>
-                                    `,
-                                    timer: 5000,
-                                    showConfirmButton: true,
-                                    confirmButtonText: 'View Details'
-                                }).then((result) => {
-                                    if (result.isConfirmed) {
-                                        window.open(`/webpanel/api-management/${providerId}/logs`, '_blank');
-                                    }
-                                });
-                            } else {
-                                Swal.fire({
-                                    icon: 'error',
-                                    title: 'Sync Failed!',
-                                    html: `
-                                        <div class="text-left">
-                                            <p><strong>Provider:</strong> ${data.provider_name}</p>
-                                            <p><strong>Error:</strong> ${data.error_message || 'Unknown error occurred'}</p>
-                                            <p class="mt-2 text-sm text-red-600">Please check the logs for more details.</p>
-                                        </div>
-                                    `,
-                                    confirmButtonText: 'View Logs',
-                                    showCancelButton: true,
-                                    cancelButtonText: 'Close'
-                                }).then((result) => {
-                                    if (result.isConfirmed) {
-                                        window.open(`/webpanel/api-management/${providerId}/logs`, '_blank');
-                                    }
-                                });
-                            }
-                            
-                            // Refresh page to show updated status
-                            setTimeout(() => location.reload(), 6000);
-                        }
-                        
-                        // Progress indicator for long-running syncs
-                        if (data.status === 'running' && data.duration > 30) {
-                            console.log(`Sync still running... Duration: ${Math.floor(data.duration / 60)}m ${data.duration % 60}s`);
-                        }
-                        
-                    } else {
-                        console.error('Failed to check sync status:', data.message);
-                    }
-                })
-                .catch(error => {
-                    console.error('Error checking sync status:', error);
-                    
-                    // If we can't check status for 5 consecutive times, stop monitoring
-                    if (checkCount > 5 && checkCount % 5 === 0) {
-                        clearInterval(checkInterval);
-                        Swal.fire({
-                            icon: 'warning',
-                            title: 'Connection Issue',
-                            text: 'Unable to monitor sync status. Please refresh the page manually to check progress.',
-                            confirmButtonText: 'Refresh Now',
-                            showCancelButton: true,
-                            cancelButtonText: 'Cancel'
-                        }).then((result) => {
-                            if (result.isConfirmed) {
-                                location.reload();
-                            }
-                        });
-                    }
-                });
-                
-                // Stop monitoring after maximum checks
-                if (checkCount >= maxChecks) {
-                    clearInterval(checkInterval);
-                    Swal.fire({
-                        icon: 'info',
-                        title: 'Monitoring Stopped',
-                        text: 'Sync monitoring has been stopped after 10 minutes. Please refresh to check current status.',
-                        confirmButtonText: 'Refresh'
-                    }).then(() => location.reload());
-                }
-                
-            }, 3000); // Check every 3 seconds
         }
 
         function testScheduledSync(providerId, scheduleId) {
@@ -568,7 +396,6 @@
                                         <p><strong>Type:</strong> <span class="inline-block px-2 py-1 bg-green-100 text-green-800 text-xs rounded">⏰ Scheduled</span></p>
                                         <p><strong>Total Records:</strong> ${data.summary.total_records}</p>
                                         <p><strong>Created Tours:</strong> ${data.summary.created_tours}</p>
-                                        <p><strong>Updated Tours:</strong> ${data.summary.updated_tours || 0}</p>
                                         <p><strong>Duplicated Tours:</strong> ${data.summary.duplicated_tours}</p>
                                         <p><strong>Errors:</strong> ${data.summary.error_count}</p>
                                     </div>
@@ -645,72 +472,6 @@
                 }
             });
         }
-    </script>
-
-    <!-- Auto-refresh for running syncs -->
-    <script>
-        // Debug: Add console logging for sync monitoring
-        window.SyncMonitor = {
-            activeSyncs: new Map(),
-            
-            log: function(message) {
-                const timestamp = new Date().toLocaleTimeString();
-                console.log(`[${timestamp}] Sync Monitor: ${message}`);
-            },
-            
-            trackSync: function(syncLogId, providerId, status) {
-                this.activeSyncs.set(syncLogId, {
-                    providerId: providerId,
-                    status: status,
-                    startTime: Date.now()
-                });
-                this.log(`Tracking sync ${syncLogId} (Provider: ${providerId}, Status: ${status})`);
-            },
-            
-            updateSync: function(syncLogId, status) {
-                if (this.activeSyncs.has(syncLogId)) {
-                    const sync = this.activeSyncs.get(syncLogId);
-                    sync.status = status;
-                    sync.lastUpdate = Date.now();
-                    this.log(`Updated sync ${syncLogId} status to: ${status}`);
-                    
-                    if (status === 'completed' || status === 'failed') {
-                        this.activeSyncs.delete(syncLogId);
-                        this.log(`Removed completed sync ${syncLogId} from tracking`);
-                    }
-                }
-            },
-            
-            getActiveSyncCount: function() {
-                return this.activeSyncs.size;
-            }
-        };
-        // Check for stale syncs on page load (no auto-refresh)
-        document.addEventListener('DOMContentLoaded', function() {
-            const runningElements = document.querySelectorAll('[data-status="running"], [data-status="queued"]');
-            
-            if (runningElements.length > 0) {
-                console.log('Found running/queued syncs, checking for stale syncs...');
-                
-                // Check for stale syncs on page load only
-                runningElements.forEach(element => {
-                    const syncCard = element.closest('.api-card');
-                    if (syncCard) {
-                        const syncTime = element.closest('.text-xs').querySelector('.text-slate-500');
-                        if (syncTime && syncTime.textContent.includes('ago')) {
-                            // If sync started more than 10 minutes ago, mark as potentially stale
-                            const timeText = syncTime.textContent;
-                            if (timeText.includes('hour') || (timeText.includes('minute') && parseInt(timeText) > 10)) {
-                                element.style.border = '2px solid #f59e0b';
-                                element.title = 'This sync may be stuck. Check logs for details.';
-                            }
-                        }
-                    }
-                });
-                
-                // No auto-refresh - only update via monitorSyncProgress when manual sync is started
-            }
-        });
     </script>
 
         </div>
