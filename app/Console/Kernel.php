@@ -9,6 +9,15 @@ use App\Http\Controllers\Functions\ApiController;
 class Kernel extends ConsoleKernel
 {
     /**
+     * The Artisan commands provided by your application.
+     *
+     * @var array
+     */
+    protected $commands = [
+        // Manual sync now uses schedule system instead of background commands
+    ];
+
+    /**
      * Define the application's command schedule.
      *
      * @param  \Illuminate\Console\Scheduling\Schedule  $schedule
@@ -102,9 +111,14 @@ class Kernel extends ConsoleKernel
      */
     protected function shouldRunSchedule($schedule, $now)
     {
-        // If never run, should run if past scheduled time
+        // If never run, only run if it's past the scheduled time
         if (!$schedule->last_run_at) {
-            return true;
+            if ($schedule->frequency === 'daily' && $schedule->run_time) {
+                $runTime = \Carbon\Carbon::parse($schedule->run_time);
+                // Only run if current time matches or has passed the scheduled time
+                return $now->format('H:i') === $runTime->format('H:i');
+            }
+            return false; // Don't run immediately for new schedules
         }
         
         $lastRun = \Carbon\Carbon::parse($schedule->last_run_at);
@@ -117,8 +131,22 @@ class Kernel extends ConsoleKernel
             case 'daily':
                 if (!$schedule->run_time) return false;
                 $runTime = \Carbon\Carbon::parse($schedule->run_time);
-                return $now->format('H:i') === $runTime->format('H:i') && 
-                       $now->diffInMinutes($lastRun) >= 1440; // Once per day
+                
+                // Check if it's the right time AND at least 23 hours have passed
+                // This prevents multiple runs on the same day
+                if ($now->format('H:i') === $runTime->format('H:i')) {
+                    // If last run was today, don't run again
+                    if ($lastRun->isToday()) {
+
+
+
+                           
+                        return false;
+                    }
+                    // If last run was yesterday or earlier, run it
+                    return true;
+                }
+                return false;
                 
             case 'weekly':
                 if (!$schedule->run_time || !$schedule->days_of_week) return false;

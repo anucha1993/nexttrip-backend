@@ -1607,15 +1607,25 @@ function updateStaticValueDisplay(index) {
         }
 
         // Handle schedule form submission
+        // NOTE: we always send the HTTP request as POST here so the browser will send
+        // multipart/form-data which PHP/Laravel can parse into Request->input().
+        // For edits we set the hidden input named "_method" to "PUT" (see editSchedule())
+        // so Laravel will treat the request as an update. Sending a native PUT with
+        // multipart/form-data may result in PHP not populating $_POST and cause
+        // validation errors ("ข้อมูลไม่ถูกต้อง").
         document.getElementById('scheduleForm').addEventListener('submit', function(e) {
             e.preventDefault();
-            
+
             const formData = new FormData(this);
             const url = this.action;
-            const method = document.getElementById('scheduleMethod').value;
-            
+
+            // Always use POST for the actual HTTP method so multipart form data is parsed.
+            // The hidden input with name="_method" (scheduleMethod) indicates the intended
+            // semantic method (PUT for updates) and will be included in formData.
+            const httpMethod = 'POST';
+
             fetch(url, {
-                method: method,
+                method: httpMethod,
                 body: formData,
                 headers: {
                     'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),

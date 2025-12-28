@@ -532,9 +532,9 @@ function syncManual(providerId) {
     
     btn.disabled = true;
     icon.classList.add('animate-spin');
-    btn.innerHTML = '<i class="lucide lucide-refresh-cw w-4 h-4 mr-2 animate-spin"></i>Syncing...';
+    btn.innerHTML = '<i class="lucide lucide-refresh-cw w-4 h-4 mr-2 animate-spin"></i>Starting...';
 
-    fetch(`/webpanel/api-management/${providerId}/sync-manual`, {
+    fetch(`/webpanel/api-management/${providerId}/sync-manual-async`, {
         method: 'POST',
         headers: {
             'X-CSRF-TOKEN': '{{ csrf_token() }}',
@@ -546,23 +546,25 @@ function syncManual(providerId) {
     .then(data => {
         if (data.success) {
             Swal.fire({
-                title: 'Sync Completed!',
+                title: 'Sync Started!',
                 html: `
                     <div class="text-left">
-                        <p><strong>Processed:</strong> ${data.stats.processed}</p>
-                        <p><strong>Created:</strong> ${data.stats.created}</p>
-                        <p><strong>Updated:</strong> ${data.stats.updated}</p>
-                        <p><strong>Failed:</strong> ${data.stats.failed}</p>
+                        <p><strong>Provider:</strong> ${data.provider_name}</p>
+                        <p><strong>Status:</strong> ${data.status}</p>
+                        <p><strong>Sync Log ID:</strong> ${data.sync_log_id}</p>
+                        <p class="mt-2 text-sm text-gray-600">${data.note}</p>
                     </div>
                 `,
                 icon: 'success',
-                confirmButtonText: 'OK'
-            }).then(() => {
-                location.reload();
+                confirmButtonText: 'OK',
+                willClose: () => {
+                    // Optional: Refresh logs section to show new log entry
+                    location.reload();
+                }
             });
         } else {
             Swal.fire({
-                title: 'Sync Failed',
+                title: 'Failed to Start Sync',
                 text: data.message,
                 icon: 'error',
                 confirmButtonText: 'OK'
@@ -572,7 +574,7 @@ function syncManual(providerId) {
     .catch(error => {
         Swal.fire({
             title: 'Error',
-            text: 'Failed to perform sync',
+            text: 'Failed to start sync',
             icon: 'error',
             confirmButtonText: 'OK'
         });

@@ -1246,6 +1246,9 @@ class ApiManagementController extends Controller
         }
     }
 
+    /**
+     * Legacy manual sync (blocking) - KEEP FOR BACKWARD COMPATIBILITY
+     */
     public function syncManual($id, $limit = null)
     {
         $provider = ApiProviderModel::with(['fieldMappings', 'conditions'])->findOrFail($id);
@@ -1274,6 +1277,173 @@ class ApiManagementController extends Controller
                 'message' => 'Sync error: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Start manual sync using exactly same system as scheduled sync
+     */
+    public function startManualSyncAsync(Request $request, $id)
+    {
+        $provider = ApiProviderModel::with(['fieldMappings', 'conditions'])->findOrFail($id);
+        $limit = (int)$request->get('limit', 0);
+        
+        if ($provider->status !== 'active') {
+            return response()->json([
+                'success' => false,
+                'message' => 'API Provider is not active!'
+            ], 400);
+        }
+
+        try {
+            // Execute sync EXACTLY like scheduled sync but marked as manual
+            $result = $this->performSync($provider, 'manual', $limit);
+            
+            return response()->json([
+                'success' => true,
+                'sync_log_id' => $result['log_id'],
+                'message' => "Manual sync completed for {$provider->name}",
+                'provider_name' => $provider->name,
+                'status' => 'completed',
+                'summary' => $result['summary']
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('Manual sync failed', [
+                'provider' => $provider->name,
+                'error' => $e->getMessage(),
+                'line' => $e->getLine(),
+                'file' => $e->getFile()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Manual sync failed: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Execute sync in background (non-blocking)
+     */
+    private function performSyncInBackground($provider, $syncLogId, $limit = 0)
+    {
+        // Use register_shutdown_function to execute after response is sent
+        register_shutdown_function(function() use ($provider, $syncLogId, $limit) {
+            try {
+                $syncLog = ApiSyncLogModel::find($syncLogId);
+                if (!$syncLog) {
+                    Log::error('Sync log not found', ['sync_log_id' => $syncLogId]);
+                    return;
+                }
+                
+                $syncLog->update(['status' => 'running']);
+                Log::info('Starting background sync', [
+                    'provider' => $provider->name,
+                    'sync_log_id' => $syncLogId
+                ]);
+                
+                // Run the actual sync using same method as scheduled sync
+                $result = $this->performSync($provider, 'manual', $limit);
+                
+                // Update sync log with results
+                $syncLog->update([
+                    'status' => 'completed',
+                    'completed_at' => now(),
+                    'total_records' => $result['summary']['total_records'] ?? 0,
+                    'created_tours' => $result['summary']['created_tours'] ?? 0,
+                    'updated_tours' => $result['summary']['updated_tours'] ?? 0,
+                    'duplicated_tours' => $result['summary']['duplicated_tours'] ?? 0,
+                    'error_count' => $result['summary']['error_count'] ?? 0,
+                    'summary' => is_array($result['summary']) ? json_encode($result['summary']) : $result['summary']
+                ]);
+                
+                Log::info('Background sync completed', [
+                    'provider' => $provider->name,
+                    'sync_log_id' => $syncLogId,
+                    'created_tours' => $result['summary']['created_tours'] ?? 0
+                ]);
+                
+            } catch (\Exception $e) {
+                Log::error('Background sync failed', [
+                    'sync_log_id' => $syncLogId,
+                    'provider' => $provider->name,
+                    'error' => $e->getMessage(),
+                    'line' => $e->getLine(),
+                    'file' => $e->getFile()
+                ]);
+                
+                if (isset($syncLog)) {
+                    $syncLog->update([
+                        'status' => 'failed',
+                        'completed_at' => now(),
+                        'error_message' => $e->getMessage(),
+                        'summary' => json_encode([
+                            'status' => 'failed',
+                            'error' => $e->getMessage(),
+                            'line' => $e->getLine()
+                        ])
+                    ]);
+                }
+            }
+        });
+    }
+
+    /**
+     * Get sync status for real-time monitoring
+     */
+    public function getSyncStatus($syncLogId)
+    {
+        try {
+            $syncLog = ApiSyncLogModel::findOrFail($syncLogId);
+            
+            // Calculate duration if sync is completed
+            $duration = null;
+            if ($syncLog->started_at && $syncLog->completed_at) {
+                $duration = $syncLog->started_at->diffInSeconds($syncLog->completed_at);
+            } elseif ($syncLog->started_at) {
+                // Calculate current duration if still running
+                $duration = $syncLog->started_at->diffInSeconds(now());
+            }
+            
+            return response()->json([
+                'success' => true,
+                'id' => $syncLog->id,
+                'status' => $syncLog->status,
+                'sync_type' => $syncLog->sync_type,
+                'started_at' => $syncLog->started_at ? $syncLog->started_at->format('Y-m-d H:i:s') : null,
+                'completed_at' => $syncLog->completed_at ? $syncLog->completed_at->format('Y-m-d H:i:s') : null,
+                'duration' => $duration,
+                'total_records' => $syncLog->total_records ?? 0,
+                'created_tours' => $syncLog->created_tours ?? 0,
+                'updated_tours' => $syncLog->updated_tours ?? 0,
+                'duplicated_tours' => $syncLog->duplicated_tours ?? 0,
+                'error_count' => $syncLog->error_count ?? 0,
+                'error_message' => $syncLog->error_message,
+                'summary' => $syncLog->summary,
+                'is_stale' => $this->isSyncStale($syncLog),
+                'provider_name' => $syncLog->apiProvider->name ?? 'Unknown'
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'ไม่สามารถดึงข้อมูลสถานะ sync ได้: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Check if sync is stale (might be stuck)
+     */
+    private function isSyncStale($syncLog)
+    {
+        // If sync is running/queued for more than 10 minutes, consider it stale
+        if (in_array($syncLog->status, ['running', 'queued']) && $syncLog->started_at) {
+            $minutesElapsed = $syncLog->started_at->diffInMinutes(now());
+            return $minutesElapsed > 10;
+        }
+        
+        return false;
     }
 
     public function syncFromProvider(Request $request)
@@ -1563,6 +1733,7 @@ class ApiManagementController extends Controller
                 'summary' => [
                     'total_records' => $totalRecords,
                     'created_tours' => $createdTours,
+                    'updated_tours' => $updatedTours,
                     'duplicated_tours' => $duplicatedTours,
                     'error_count' => $errorCount
                 ]
@@ -1628,10 +1799,12 @@ class ApiManagementController extends Controller
         
         Log::info('Multi-step sync: Found programs', [
             'provider' => $provider->name, 
-            'count' => count($programIds)
+            'count' => count($programIds),
+            'limit_parameter' => $limit
         ]);
         
         $createdTours = 0;
+        $updatedTours = 0;
         $duplicatedTours = 0;
         $skippedTours = 0;
         $errorCount = 0;
@@ -1640,7 +1813,14 @@ class ApiManagementController extends Controller
         
         // Apply limit to program IDs if specified
         if ($limit > 0 && count($programIds) > $limit) {
+            $originalCount = count($programIds);
             $programIds = array_slice($programIds, 0, $limit);
+            Log::info('Multi-step sync: Applied limit', [
+                'provider' => $provider->name,
+                'original_count' => $originalCount,
+                'limited_count' => count($programIds),
+                'limit' => $limit
+            ]);
         }
         
         $config = $provider->config ?? [];
@@ -1750,6 +1930,8 @@ class ApiManagementController extends Controller
                     if ($result['action'] === 'created' || $result['action'] === 'updated') {
                         if ($result['action'] === 'created') {
                             $createdTours++;
+                        } elseif ($result['action'] === 'updated') {
+                            $updatedTours++;
                         }
                         
                         Log::info('Tour processed, now processing periods', [
@@ -1797,6 +1979,14 @@ class ApiManagementController extends Controller
                             // Process periods if period URL pattern exists
                             if (!empty($config['period_url_pattern'])) {
                                 // Use program's P_ID, not programData's
+                                $programIdForPeriod = $program['P_ID'] ?? $programData['P_ID'];
+                                $this->processPeriodsFromConfig($provider, $result['tour_model'], $programIdForPeriod);
+                            }
+                        } elseif ($result['action'] === 'updated') {
+                            $updatedTours++;
+                            
+                            // Process periods for updated tours too
+                            if (!empty($config['period_url_pattern'])) {
                                 $programIdForPeriod = $program['P_ID'] ?? $programData['P_ID'];
                                 $this->processPeriodsFromConfig($provider, $result['tour_model'], $programIdForPeriod);
                             }
@@ -1899,31 +2089,32 @@ class ApiManagementController extends Controller
             'completed_at' => now(),
             'total_records' => $processedCount,
             'created_tours' => $createdTours,
+            'updated_tours' => $updatedTours,
             'duplicated_tours' => $duplicatedTours,
             'error_count' => $errorCount,
             'error_message' => $errorCount > 0 ? implode('; ', array_slice($errors, 0, 5)) : null,
             'summary' => [
                 'total_records' => $processedCount,
                 'created_tours' => $createdTours,
+                'updated_tours' => $updatedTours,
                 'duplicated_tours' => $duplicatedTours,
                 'skipped_tours' => $skippedTours,
                 'error_count' => $errorCount,
                 'errors' => array_slice($errors, 0, 10)
             ]
         ]);
-        
+
         return [
             'log_id' => $syncLog->id,
             'summary' => [
                 'total_records' => $processedCount,
                 'created_tours' => $createdTours,
+                'updated_tours' => $updatedTours,
                 'duplicated_tours' => $duplicatedTours,
                 'skipped_tours' => $skippedTours,
                 'error_count' => $errorCount
             ]
-        ];
-        
-        } catch (\Exception $e) {
+        ];        } catch (\Exception $e) {
             // Handle fatal errors that stop the entire sync
             Log::error('Multi-step sync failed', [
                 'provider' => $provider->name,
@@ -2292,6 +2483,7 @@ class ApiManagementController extends Controller
             
             // Step 2: Loop through each country and fetch tours
             $createdTours = 0;
+            $updatedTours = 0;
             $duplicatedTours = 0;
             $errorCount = 0;
             $errors = [];
@@ -2420,7 +2612,7 @@ class ApiManagementController extends Controller
                     if ($result['action'] === 'created') {
                         $createdTours++;
                     } elseif ($result['action'] === 'updated') {
-                        $createdTours++; // Count updates as processed
+                        $updatedTours++;
                     } elseif ($result['action'] === 'duplicated') {
                         $duplicatedTours++;
                     }
@@ -2505,6 +2697,7 @@ class ApiManagementController extends Controller
                 'completed_at' => now(),
                 'total_records' => count($toursToProcess),
                 'created_tours' => $createdTours,
+                'updated_tours' => $updatedTours,
                 'duplicated_tours' => $duplicatedTours,
                 'error_count' => $errorCount,
                 'error_message' => $errorCount > 0 ? implode('; ', array_slice($errors, 0, 5)) : null,
@@ -2512,18 +2705,20 @@ class ApiManagementController extends Controller
                     'total_countries' => count($countries),
                     'total_records' => count($toursToProcess),
                     'created_tours' => $createdTours,
+                    'updated_tours' => $updatedTours,
                     'duplicated_tours' => $duplicatedTours,
                     'error_count' => $errorCount,
                     'errors' => array_slice($errors, 0, 10)
                 ]
             ]);
-            
+
             return [
                 'log_id' => $syncLog->id,
                 'summary' => [
                     'total_countries' => count($countries),
                     'total_records' => count($toursToProcess),
                     'created_tours' => $createdTours,
+                    'updated_tours' => $updatedTours,
                     'duplicated_tours' => $duplicatedTours,
                     'error_count' => $errorCount
                 ]
@@ -2567,6 +2762,7 @@ class ApiManagementController extends Controller
         
         $allTours = [];
         $createdTours = 0;
+        $updatedTours = 0;
         $duplicatedTours = 0;
         $errorCount = 0;
         $errors = [];
@@ -2652,7 +2848,7 @@ class ApiManagementController extends Controller
                     if ($result['action'] === 'created') {
                         $createdTours++;
                     } elseif ($result['action'] === 'updated') {
-                        $createdTours++;
+                        $updatedTours++;
                     } elseif ($result['action'] === 'duplicated') {
                         $duplicatedTours++;
                     }
@@ -2737,6 +2933,7 @@ class ApiManagementController extends Controller
                 'completed_at' => now(),
                 'total_records' => count($allTours),
                 'created_tours' => $createdTours,
+                'updated_tours' => $updatedTours,
                 'duplicated_tours' => $duplicatedTours,
                 'error_count' => $errorCount,
                 'error_message' => $errorCount > 0 ? implode('; ', array_slice($errors, 0, 5)) : null,
@@ -2745,12 +2942,13 @@ class ApiManagementController extends Controller
                     'total_records' => count($allTours),
                     'total_tours' => count($tourGroups),
                     'created_tours' => $createdTours,
+                    'updated_tours' => $updatedTours,
                     'duplicated_tours' => $duplicatedTours,
                     'error_count' => $errorCount,
                     'errors' => array_slice($errors, 0, 10)
                 ]
             ]);
-            
+
             return [
                 'log_id' => $syncLog->id,
                 'summary' => [
@@ -2758,12 +2956,11 @@ class ApiManagementController extends Controller
                     'total_records' => count($allTours),
                     'total_tours' => count($tourGroups),
                     'created_tours' => $createdTours,
+                    'updated_tours' => $updatedTours,
                     'duplicated_tours' => $duplicatedTours,
                     'error_count' => $errorCount
                 ]
-            ];
-            
-        } catch (\Exception $e) {
+            ];        } catch (\Exception $e) {
             Log::error('Super Holiday sync error', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
@@ -2862,6 +3059,10 @@ class ApiManagementController extends Controller
             ])->whereNull('deleted_at')->first();
         }
         
+        // Initialize tracking variables for restored/converted tours
+        $wasRestored = false;
+        $wasConverted = false;
+        
         // For GO365, also check by tour_code to prevent duplicate constraint violations
         if (!$existingTour && $provider->code === 'go365' && isset($tourData['tour_code'])) {
             $existingTour = TourModel::where([
@@ -2871,11 +3072,223 @@ class ApiManagementController extends Controller
         }
         
         // For Best Consortium, also check by code1 (tour code from API) to prevent duplicate constraint violations
-        if (!$existingTour && ($provider->code === 'bestconsortium' || $provider->code === 'best') && isset($tourData['id'])) {
+        if (!$existingTour && ($provider->code === 'bestconsortium' || $provider->code === 'best_consortium' || $provider->code === 'best') && isset($tourData['id'])) {
             $existingTour = TourModel::where([
-                'code1' => $tourData['id'],
-                'api_type' => $provider->code
+                'code1' => trim($tourData['id']),  // Trim whitespace to handle data inconsistencies
+                'api_type' => 'best'  // Use 'best' consistently for api_type
             ])->whereNull('deleted_at')->first();
+            
+            Log::info('Best Consortium: Checking existing tour by code1', [
+                'provider_code' => $provider->code,
+                'tour_code1' => trim($tourData['id']),
+                'existing_tour_found' => $existingTour ? 'YES' : 'NO',
+                'existing_tour_id' => $existingTour ? $existingTour->id : null
+            ]);
+        }
+
+        // For Zego, also check by code1 (tour code from API) to prevent duplicate constraint violations
+        if (!$existingTour && $provider->code === 'zego' && isset($tourData['ProductCode'])) {
+            // First, check for active tours
+            $existingTour = TourModel::where([
+                'code1' => trim($tourData['ProductCode']),  // Trim whitespace to handle data inconsistencies
+                'api_type' => 'zego'
+            ])->whereNull('deleted_at')->first();
+            
+            // If no active tour found, check for soft deleted tours with same code1
+            // If found, restore it instead of creating new one
+            if (!$existingTour) {
+                $softDeletedTour = TourModel::where('code1', trim($tourData['ProductCode']))
+                    ->whereNotNull('deleted_at')
+                    ->first();
+                    
+                if ($softDeletedTour) {
+                    Log::info('Zego: Found soft deleted tour with same code1, restoring it', [
+                        'provider_code' => $provider->code,
+                        'tour_code1' => trim($tourData['ProductCode']),
+                        'deleted_tour_id' => $softDeletedTour->id
+                    ]);
+                    
+                    // Restore the soft deleted tour by setting deleted_at to null
+                    $softDeletedTour->deleted_at = null;
+                    $softDeletedTour->save();
+                    $existingTour = $softDeletedTour;
+                    
+                    // Mark this as a restored tour (should count as created)
+                    $wasRestored = true;
+                }
+            }
+            
+            // If still no tour found, check for tours with empty api_type but same code1
+            // This handles cases where tours were created manually or by other processes
+            if (!$existingTour) {
+                $manualTour = TourModel::where('code1', trim($tourData['ProductCode']))
+                    ->where(function($query) {
+                        $query->whereNull('api_type')
+                              ->orWhere('api_type', '');
+                    })
+                    ->whereNull('deleted_at')
+                    ->first();
+                    
+                if ($manualTour) {
+                    Log::info('Zego: Found manual tour with same code1, converting to API tour', [
+                        'provider_code' => $provider->code,
+                        'tour_code1' => trim($tourData['ProductCode']),
+                        'manual_tour_id' => $manualTour->id
+                    ]);
+                    
+                    // Convert manual tour to API tour
+                    $existingTour = $manualTour;
+                    
+                    // Mark this as a converted tour (should count as created)
+                    $wasConverted = true;
+                }
+            }
+            
+            Log::info('Zego: Checking existing tour by code1', [
+                'provider_code' => $provider->code,
+                'tour_code1' => trim($tourData['ProductCode']),
+                'existing_tour_found' => $existingTour ? 'YES' : 'NO',
+                'existing_tour_id' => $existingTour ? $existingTour->id : null
+            ]);
+        }
+
+        // For TTN Japan, also check by code1 (tour code from API) to prevent duplicate constraint violations
+        if (!$existingTour && ($provider->code === 'ttn' || $provider->code === 'ttn_japan')) {
+            // Get the code1 field value using proper field mapping
+            $code1Value = $this->getApiFieldValue($provider->id, 'tour', 'code1', $tourData);
+            
+            if ($code1Value) {
+                // First, check for active tours
+                $existingTour = TourModel::where([
+                    'code1' => trim($code1Value),  // Trim whitespace to handle data inconsistencies
+                    'api_type' => 'ttn'
+                ])->whereNull('deleted_at')->first();
+                
+                // If no active tour found, check for soft deleted tours with same code1
+                // If found, restore it instead of creating new one
+                if (!$existingTour) {
+                    $softDeletedTour = TourModel::where('code1', trim($code1Value))
+                        ->whereNotNull('deleted_at')
+                        ->first();
+                        
+                    if ($softDeletedTour) {
+                        Log::info('TTN Japan: Found soft deleted tour with same code1, restoring it', [
+                            'provider_code' => $provider->code,
+                            'tour_code1' => trim($code1Value),
+                            'deleted_tour_id' => $softDeletedTour->id
+                        ]);
+                        
+                        // Restore the soft deleted tour by setting deleted_at to null
+                        $softDeletedTour->deleted_at = null;
+                        $softDeletedTour->save();
+                        $existingTour = $softDeletedTour;
+                        
+                        // Mark this as a restored tour (should count as created)
+                        $wasRestored = true;
+                    }
+                }
+                
+                // If still no tour found, check for tours with empty api_type but same code1
+                // This handles cases where tours were created manually or by other processes
+                if (!$existingTour) {
+                    $manualTour = TourModel::where('code1', trim($code1Value))
+                        ->where(function($query) {
+                            $query->whereNull('api_type')
+                                  ->orWhere('api_type', '');
+                        })
+                        ->whereNull('deleted_at')
+                        ->first();
+                        
+                    if ($manualTour) {
+                        Log::info('TTN Japan: Found manual tour with same code1, converting to API tour', [
+                            'provider_code' => $provider->code,
+                            'tour_code1' => trim($code1Value),
+                            'manual_tour_id' => $manualTour->id
+                        ]);
+                        
+                        // Convert manual tour to API tour
+                        $existingTour = $manualTour;
+                        
+                        // Mark this as a converted tour (should count as created)
+                        $wasConverted = true;
+                    }
+                }
+                
+                Log::info('TTN Japan: Checking existing tour by code1', [
+                    'provider_code' => $provider->code,
+                    'tour_code1' => trim($code1Value),
+                    'existing_tour_found' => $existingTour ? 'YES' : 'NO',
+                    'existing_tour_id' => $existingTour ? $existingTour->id : null
+                ]);
+            }
+        }
+
+        // For Super Holiday, also check by code1 (tour code from API) to prevent duplicate constraint violations
+        if (!$existingTour && ($provider->code === 'superbholiday' || $provider->code === 'superb_holiday') && isset($tourData['maincode'])) {
+            // First, check for active tours
+            $existingTour = TourModel::where([
+                'code1' => trim($tourData['maincode']),  // Trim whitespace to handle data inconsistencies
+                'api_type' => 'superbholiday'
+            ])->whereNull('deleted_at')->first();
+            
+            // If no active tour found, check for soft deleted tours with same code1
+            // If found, restore it instead of creating new one
+            if (!$existingTour) {
+                $softDeletedTour = TourModel::where('code1', trim($tourData['maincode']))
+                    ->whereNotNull('deleted_at')
+                    ->first();
+                    
+                if ($softDeletedTour) {
+                    Log::info('Super Holiday: Found soft deleted tour with same code1, restoring it', [
+                        'provider_code' => $provider->code,
+                        'tour_code1' => trim($tourData['maincode']),
+                        'deleted_tour_id' => $softDeletedTour->id
+                    ]);
+                    
+                    // Restore the soft deleted tour by setting deleted_at to null
+                    $softDeletedTour->deleted_at = null;
+                    $softDeletedTour->save();
+                    $existingTour = $softDeletedTour;
+                    
+                    // Mark this as a restored tour (should count as created)
+                    $wasRestored = true;
+                }
+            }
+            
+            // If still no tour found, check for tours with empty api_type but same code1
+            // This handles cases where tours were created manually or by other processes
+            if (!$existingTour) {
+                $manualTour = TourModel::where('code1', trim($tourData['maincode']))
+                    ->where(function($query) {
+                        $query->whereNull('api_type')
+                              ->orWhere('api_type', '');
+                    })
+                    ->whereNull('deleted_at')
+                    ->first();
+                    
+                if ($manualTour) {
+                    Log::info('Super Holiday: Found manual tour with same code1, converting to API tour', [
+                        'provider_code' => $provider->code,
+                        'tour_code1' => trim($tourData['maincode']),
+                        'manual_tour_id' => $manualTour->id
+                    ]);
+                    
+                    // Convert manual tour to API tour
+                    $existingTour = $manualTour;
+                    
+                    // Mark this as a converted tour (should count as created)
+                    $wasConverted = true;
+                }
+            }
+            
+            Log::info('Super Holiday: Checking existing tour by code1', [
+                'provider_code' => $provider->code,
+                'tour_code1' => trim($tourData['maincode']),
+                'existing_tour_found' => $existingTour ? 'YES' : 'NO',
+                'existing_tour_id' => $existingTour ? $existingTour->id : null,
+                'was_restored' => $wasRestored,
+                'was_converted' => $wasConverted
+            ]);
         }
 
         if ($existingTour) {
@@ -2917,16 +3330,23 @@ class ApiManagementController extends Controller
             // Update tour price based on new periods
             $this->updateTourPrice($existingTour);
             
-            // Log as duplicate for tracking but indicate it was updated
-            TourDuplicateModel::create([
-                'api_provider_id' => $provider->id,
-                'sync_log_id' => $syncLog->id,
-                'api_id' => $apiId,
-                'existing_tour_id' => $existingTour->id,
-                'api_data' => $tourData,
-                'status' => 'updated'  // Changed from 'pending' to 'updated'
-            ]);
-            
+            // Log as duplicate for tracking but indicate it was updated (only if syncLog is available)
+            if ($syncLog) {
+                TourDuplicateModel::create([
+                    'api_provider_id' => $provider->id,
+                    'sync_log_id' => $syncLog->id,
+                    'api_id' => $apiId,
+                    'existing_tour_id' => $existingTour->id,
+                    'api_data' => $tourData,
+                    'status' => 'updated'  // Changed from 'pending' to 'updated'
+                ]);
+            }
+
+            // Check if this was a restored or converted tour (should count as created)
+            if (isset($wasRestored) || isset($wasConverted)) {
+                return ['action' => 'created', 'tour_id' => $existingTour->id, 'tour_model' => $existingTour];
+            }
+
             return ['action' => 'updated', 'tour_id' => $existingTour->id, 'tour_model' => $existingTour];
         }
 
@@ -2956,8 +3376,8 @@ class ApiManagementController extends Controller
             $tourModel->group_id = 3; // Super Holiday (ตาม headcode)
         } elseif ($provider->code === 'zego') {
             $tourModel->wholesale_id = null; // Zego ไม่มี wholesale_id ตาม headcode
-        } elseif ($provider->code === 'best') {
-            $tourModel->wholesale_id = null; // Best ไม่มี wholesale_id ตาม headcode
+        } elseif ($provider->code === 'best' || $provider->code === 'bestconsortium' || $provider->code === 'best_consortium') {
+            $tourModel->wholesale_id = 11; // Best Consortium wholesale_id
         }
         
         // Map fields จาก API data using database mappings (including static values like api_type, data_type)
@@ -3003,28 +3423,71 @@ class ApiManagementController extends Controller
             // Handle duplicate constraint violations
             if ($e->getCode() == 23000 && strpos($e->getMessage(), 'Duplicate entry') !== false) {
                 // Try to find the existing tour again (might have been created by another process)
-                $existingTour = TourModel::where([
-                    'code1' => $tourData['tour_code'] ?? '',
-                    'api_type' => $provider->code
-                ])->orWhere([
-                    'api_id' => $apiId,
-                    'api_type' => $provider->code
-                ])->whereNull('deleted_at')->first();
+                // Use appropriate code field based on API provider
+                $codeField = '';
+                if ($provider->code === 'go365' && isset($tourData['tour_code'])) {
+                    $codeField = trim($tourData['tour_code']);
+                } elseif (($provider->code === 'bestconsortium' || $provider->code === 'best_consortium' || $provider->code === 'best') && isset($tourData['id'])) {
+                    $codeField = trim($tourData['id']);
+                } elseif (isset($tourData['code'])) {
+                    $codeField = trim($tourData['code']);
+                } elseif (isset($tourData['tour_code'])) {
+                    $codeField = trim($tourData['tour_code']);
+                }
+                
+                $existingTour = null;
+                if (!empty($codeField)) {
+                    $apiTypeToCheck = 'best'; // Use consistent api_type for Best Consortium
+                    if ($provider->code === 'go365') {
+                        $apiTypeToCheck = 'go365';
+                    } elseif ($provider->code === 'ttn') {
+                        $apiTypeToCheck = 'ttn';
+                    } elseif ($provider->code === 'zego') {
+                        $apiTypeToCheck = 'zego';
+                    }
+                    
+                    $existingTour = TourModel::where([
+                        'code1' => $codeField,
+                        'api_type' => $apiTypeToCheck
+                    ])->orWhere([
+                        'api_id' => $apiId,
+                        'api_type' => $apiTypeToCheck
+                    ])->whereNull('deleted_at')->first();
+                }
                 
                 if ($existingTour) {
-                    // Log as duplicate
-                    TourDuplicateModel::create([
-                        'api_provider_id' => $provider->id,
-                        'sync_log_id' => $syncLog->id,
-                        'api_id' => $apiId,
+                    Log::info('Duplicate constraint handled - found existing tour', [
+                        'provider' => $provider->code,
                         'existing_tour_id' => $existingTour->id,
-                        'api_data' => $tourData,
-                        'status' => 'duplicate_constraint'
+                        'code1' => $codeField,
+                        'api_id' => $apiId
                     ]);
+                    
+                    // Log as duplicate (only if syncLog is available)
+                    if ($syncLog) {
+                        TourDuplicateModel::create([
+                            'api_provider_id' => $provider->id,
+                            'sync_log_id' => $syncLog->id,
+                            'api_id' => $apiId,
+                            'existing_tour_id' => $existingTour->id,
+                            'api_data' => $tourData,
+                            'status' => 'duplicate_constraint'
+                        ]);
+                    }
                     
                     return ['action' => 'duplicated', 'tour_id' => $existingTour->id, 'tour_model' => $existingTour];
                 }
             }
+            
+            // Log the specific error for debugging
+            Log::error('Tour save error (not duplicate constraint)', [
+                'provider' => $provider->code,
+                'error_code' => $e->getCode(),
+                'error_message' => $e->getMessage(),
+                'api_id' => $apiId,
+                'code1' => $tourModel->code1 ?? 'N/A',
+                'tour_data_sample' => array_slice($tourData, 0, 10, true)
+            ]);
             
             // Re-throw if not a duplicate constraint violation or couldn't find existing tour
             throw $e;
@@ -3033,11 +3496,34 @@ class ApiManagementController extends Controller
         // Process periods if exists
         $this->processPeriods($provider, $tourData, $tourModel);
         
-        // TTN Japan/All: ถ้าไม่มี periods ให้ลบ tour (ไม่ sync tours ที่ไม่มี periods)
-        if (($provider->code === 'ttn_japan' || $provider->code === 'ttn_all')) {
-            $periodCount = $tourModel->period()->count();
+        // TTN Japan/All: ถ้าไม่มี periods ให้ลบ tour (เหมือน headcode เดิม - ไม่สร้าง tour ที่ไม่มี periods)
+        // Headcode เดิมจะ save tour ก่อน แล้วถ้าไม่มี period ก็ไม่ได้บันทึก period ใดๆ
+        // แต่ API Management ใหม่จะตรวจสอบหลัง processPeriods แล้ว
+        if (($provider->code === 'ttn' || $provider->code === 'ttn_japan' || $provider->code === 'ttn_all')) {
+            $apiType = 'ttn'; // Default for 'ttn' and 'ttn_japan'
+            if ($provider->code === 'ttn_all') {
+                $apiType = 'ttn_all';
+            }
+            
+            $periodCount = $tourModel->period()->where('api_type', $apiType)->whereNull('deleted_at')->count();
             if ($periodCount === 0) {
-                Log::info('TTN Japan: Deleting tour without periods', [
+                Log::info('TTN Japan: Deleting tour without periods (business logic)', [
+                    'provider' => $provider->code,
+                    'tour_id' => $tourModel->id,
+                    'tour_code' => $tourModel->code,
+                    'api_id' => $tourModel->api_id,
+                    'api_type' => $apiType
+                ]);
+                $tourModel->delete();
+                return ['action' => 'skipped', 'reason' => 'no_periods'];
+            }
+        }
+        
+        // Super Holiday: ถ้าไม่มี periods ให้ลบ tour (เหมือน headcode เดิม - ไม่สร้าง tour ที่ไม่มี periods)
+        if ($provider->code === 'superbholiday' || $provider->code === 'superb_holiday') {
+            $periodCount = $tourModel->period()->where('api_type', 'superbholiday')->whereNull('deleted_at')->count();
+            if ($periodCount === 0) {
+                Log::info('Super Holiday: Deleting tour without periods (business logic)', [
                     'provider' => $provider->code,
                     'tour_id' => $tourModel->id,
                     'tour_code' => $tourModel->code,
@@ -3145,21 +3631,69 @@ class ApiManagementController extends Controller
                 } elseif ($mapping->local_field === 'country_id' && $mapping->api_field === 'Country') {
                     // Handle Super Holiday Country field - find by country_name_th (like headcode)
                     if ($apiValue) {
-                        $country = \App\Models\Backend\CountryModel::where('country_name_th', 'like', '%' . $apiValue . '%')
-                            ->where('status', 'on')
-                            ->whereNull('deleted_at')
-                            ->first();
+                        // Log the country value for debugging
+                        Log::info('Super Holiday: Processing country field', [
+                            'country_value' => $apiValue,
+                            'is_valid_country' => strlen($apiValue) < 50 // Basic validation
+                        ]);
                         
-                        if ($country) {
-                            $tourModel->country_id = json_encode([(string)$country->id]);
+                        // Only try to map if it looks like a real country name (not an event name)
+                        if (strlen($apiValue) < 50 && !stripos($apiValue, 'event') && !stripos($apiValue, 'f1') && !stripos($apiValue, 'grand prix')) {
+                            $country = \App\Models\Backend\CountryModel::where('country_name_th', 'like', '%' . $apiValue . '%')
+                                ->where('status', 'on')
+                                ->whereNull('deleted_at')
+                                ->first();
                             
-                            Log::info('Super Holiday: Country mapped', [
-                                'country_name' => $apiValue,
-                                'country_id' => $country->id
-                            ]);
+                            if ($country) {
+                                $tourModel->country_id = json_encode([(string)$country->id]);
+                                
+                                Log::info('Super Holiday: Country mapped', [
+                                    'country_name' => $apiValue,
+                                    'country_id' => $country->id
+                                ]);
+                            } else {
+                                // Try to detect country from tour name as fallback
+                                $tourName = $tourData['title'] ?? $tourData['name'] ?? '';
+                                $countryId = $this->detectCountryFromName($tourName);
+                                
+                                if ($countryId) {
+                                    $tourModel->country_id = json_encode([(string)$countryId]);
+                                    Log::info('Super Holiday: Country detected from tour name as fallback', [
+                                        'original_country' => $apiValue,
+                                        'tour_name' => $tourName,
+                                        'detected_country_id' => $countryId
+                                    ]);
+                                } else {
+                                    $tourModel->country_id = '[]';
+                                    Log::warning('Super Holiday: Country not found and no fallback detected', [
+                                        'country_name' => $apiValue,
+                                        'tour_name' => $tourName
+                                    ]);
+                                }
+                            }
                         } else {
-                            $tourModel->country_id = '[]';
+                            // Invalid country value (likely event name), try to detect from tour name
+                            $tourName = $tourData['title'] ?? $tourData['name'] ?? '';
+                            $countryId = $this->detectCountryFromName($tourName);
+                            
+                            if ($countryId) {
+                                $tourModel->country_id = json_encode([(string)$countryId]);
+                                Log::info('Super Holiday: Invalid country field, detected from tour name', [
+                                    'invalid_country' => $apiValue,
+                                    'tour_name' => $tourName,
+                                    'detected_country_id' => $countryId
+                                ]);
+                            } else {
+                                $tourModel->country_id = '[]';
+                                Log::warning('Super Holiday: Invalid country field and no detection possible', [
+                                    'invalid_country' => $apiValue,
+                                    'tour_name' => $tourName
+                                ]);
+                            }
                         }
+                    } else {
+                        // Super Holiday: Country field empty - set empty array like headcode
+                        $tourModel->country_id = '[]';
                     }
                 } elseif ($mapping->local_field === 'country_id' && $mapping->api_field === 'tour_country') {
                     // Handle GO365 tour_country array - use country_code_2 (iso2) like headcode
@@ -3272,6 +3806,11 @@ class ApiManagementController extends Controller
                     
                     // Handle different data types
                     $processedValue = $this->processFieldValue($apiValue, $mapping->data_type ?? 'string');
+                    
+                    // Trim whitespace for code1 field to prevent duplicate constraint violations
+                    if ($mapping->local_field === 'code1' && is_string($processedValue)) {
+                        $processedValue = trim($processedValue);
+                    }
                     
                     // Debug log
                     Log::info('Mapping field', [
@@ -3390,6 +3929,122 @@ class ApiManagementController extends Controller
             default:
                 return $value;
         }
+    }
+
+    /**
+     * Get API field value using field mappings and support nested fields.
+     * Returns null if not found.
+     */
+    private function getApiFieldValue($providerId, $fieldType, $localField, $data)
+    {
+        try {
+            $mapping = DB::table('tb_api_field_mappings')
+                ->where('api_provider_id', $providerId)
+                ->where('field_type', $fieldType)
+                ->where('local_field', $localField)
+                ->first();
+
+            if (!$mapping) {
+                return null;
+            }
+
+            // If api_field empty, may be static value in transformation_rules
+            $apiField = $mapping->api_field ?? '';
+            if (empty($apiField)) {
+                $rules = $mapping->transformation_rules ? (is_string($mapping->transformation_rules) ? json_decode($mapping->transformation_rules, true) : $mapping->transformation_rules) : null;
+                if (is_array($rules)) {
+                    // single rule
+                    if (isset($rules['type']) && $rules['type'] === 'static_value') {
+                        return $rules['static_value'] ?? ($rules['value'] ?? null);
+                    }
+                    // array of rules
+                    if (isset($rules[0]) && is_array($rules[0])) {
+                        foreach ($rules as $r) {
+                            if (isset($r['type']) && $r['type'] === 'static_value') {
+                                return $r['static_value'] ?? ($r['value'] ?? null);
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
+
+            // Extract value from data using api_field pattern
+            $value = $this->extractValueByApiField($apiField, $data);
+
+            // Apply any transformation rules if present
+            if (!empty($mapping->transformation_rules)) {
+                $value = $this->applyTransformationRules($value, $mapping->transformation_rules);
+            }
+
+            return $value;
+        } catch (\Exception $e) {
+            Log::warning('getApiFieldValue error', ['provider' => $providerId, 'field' => $localField, 'error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+    /**
+     * Extract value from nested API field patterns.
+     * Supports patterns like "Periods[].PeriodID", "tour_file.file_pdf", "data.0.id" and simple keys.
+     */
+    private function extractValueByApiField($apiField, $data)
+    {
+        if (!$apiField || !is_array($data)) {
+            return null;
+        }
+
+        // Pattern: ParentArray[].ChildKey -> take first element then child
+        if (strpos($apiField, '[].') !== false) {
+            [$parent, $child] = explode('[].', $apiField, 2);
+            if (isset($data[$parent]) && is_array($data[$parent]) && count($data[$parent]) > 0) {
+                $first = $data[$parent][0];
+                return is_array($first) ? ($first[$child] ?? null) : null;
+            }
+        }
+
+        // Dot notation
+        if (strpos($apiField, '.') !== false) {
+            $parts = explode('.', $apiField);
+            $current = $data;
+            foreach ($parts as $part) {
+                if ($current === null) return null;
+                // direct key
+                if (is_array($current) && array_key_exists($part, $current)) {
+                    $current = $current[$part];
+                    continue;
+                }
+                // numeric index
+                if (is_array($current) && is_numeric($part) && array_key_exists((int)$part, $current)) {
+                    $current = $current[(int)$part];
+                    continue;
+                }
+                // case-insensitive match
+                if (is_array($current)) {
+                    $found = false;
+                    foreach ($current as $k => $v) {
+                        if (strcasecmp($k, $part) === 0) {
+                            $current = $v;
+                            $found = true;
+                            break;
+                        }
+                    }
+                    if ($found) continue;
+                }
+                // not found
+                return null;
+            }
+            return $current;
+        }
+
+        // Simple key (case-sensitive first, then case-insensitive)
+        if (array_key_exists($apiField, $data)) return $data[$apiField];
+
+        foreach ($data as $k => $v) {
+            if (strcasecmp($k, $apiField) === 0) return $v;
+        }
+
+        return null;
     }
 
     private function applyTransformationRules($value, $rules)
@@ -5797,9 +6452,10 @@ class ApiManagementController extends Controller
             
             Log::info("Starting scheduled sync for provider: {$schedule->apiProvider->name} (Schedule: {$schedule->name})");
 
-            // เรียกใช้ performSync โดยผ่าน sync_limit หากมี และระบุว่าเป็น auto sync (scheduled)
+            // เรียกใช้ performSync โดยผ่าน sync_limit หากมี และตรวจสอบว่าเป็น manual หรือ auto sync
             $limit = $schedule->sync_limit;
-            $result = $this->performSync($schedule->apiProvider, 'auto', $limit);
+            $syncType = $schedule->is_temp_manual ? 'manual' : 'auto';
+            $result = $this->performSync($schedule->apiProvider, $syncType, $limit);
 
             // performSync จะ return array with log_id และ summary หรือ throw exception
             $schedule->markAsSuccess();
@@ -5934,4 +6590,176 @@ class ApiManagementController extends Controller
             'p_airline' => $tourData['P_AIRLINE'] ?? null
         ]);
     }
+
+    /**
+     * Test sync with limited records for debugging
+     */
+    public function testSync($id, Request $request)
+    {
+        $provider = ApiProviderModel::findOrFail($id);
+        $limit = $request->get('limit', 10);
+        
+        try {
+            Log::info('Starting test sync', [
+                'provider' => $provider->name,
+                'limit' => $limit
+            ]);
+            
+            $syncResult = $this->performSync($provider, 'test', $limit);
+            
+            // Get recent tours to display
+            $recentTours = \App\Models\Backend\TourModel::where('api_type', $provider->code)
+                ->whereNull('deleted_at')
+                ->with(['period'])
+                ->orderBy('created_at', 'desc')
+                ->limit(10)
+                ->get();
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Test sync completed!',
+                'summary' => $syncResult['summary'],
+                'sync_log_id' => $syncResult['log_id'],
+                'recent_tours' => $recentTours->map(function($tour) {
+                    return [
+                        'id' => $tour->id,
+                        'code' => $tour->code,
+                        'name' => $tour->name,
+                        'api_id' => $tour->api_id,
+                        'image' => $tour->image ? '/storage/' . $tour->image : null,
+                        'pdf_file' => $tour->pdf_file,
+                        'period_count' => $tour->period ? $tour->period->count() : 0,
+                        'created_at' => $tour->created_at
+                    ];
+                })
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('Test sync failed', [
+                'provider' => $provider->name,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Test sync failed: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Detect country from tour name using common patterns
+     */
+    private function detectCountryFromName($tourName)
+    {
+        if (!$tourName) return null;
+        
+        $countryPatterns = [
+            // Thailand
+            'ไทย' => 257,
+            'thailand' => 257,
+            'กรุงเทพ' => 257,
+            'bangkok' => 257,
+            'เชียงใหม่' => 257,
+            'chiangmai' => 257,
+            'ภูเก็ต' => 257,
+            'phuket' => 257,
+            'สมุย' => 257,
+            'samui' => 257,
+            'กระบี่' => 257,
+            'krabi' => 257,
+            
+            // China (ID: 45)
+            'จีน' => 45,
+            'china' => 45,
+            'ปักกิ่ง' => 45,
+            'beijing' => 45,
+            'เซี่ยงไฮ้' => 45,
+            'shanghai' => 45,
+            'ซี่อาน' => 45,
+            'xian' => 45,
+            'ฉงชิ่ง' => 45,
+            'chongqing' => 45,
+            'กวางโจว' => 45,
+            'guangzhou' => 45,
+            'เซินเจิ้น' => 45,
+            'shenzhen' => 45,
+            'ซินเจียง' => 45,
+            'xinjiang' => 45,
+            'เจียงเจี้ย' => 45,
+            'zhangjiajie' => 45,
+            
+            // Japan (ID: 109)
+            'ญี่ปุ่น' => 109,
+            'japan' => 109,
+            'โตเกียว' => 109,
+            'tokyo' => 109,
+            'โอซาก้า' => 109,
+            'osaka' => 109,
+            'เกียวโต' => 109,
+            'kyoto' => 109,
+            'ฮอกไกโด' => 109,
+            'hokkaido' => 109,
+            
+            // Korea (ID: 116)
+            'เกาหลี' => 116,
+            'korea' => 116,
+            'โซล' => 116,
+            'seoul' => 116,
+            'ปูซาน' => 116,
+            'busan' => 116,
+            
+            // Singapore (ID: 199)
+            'สิงคโปร์' => 199,
+            'singapore' => 199,
+            
+            // Malaysia (ID: 132)
+            'มาเลเซีย' => 132,
+            'malaysia' => 132,
+            'กัวลาลัมเปอร์' => 132,
+            'kuala lumpur' => 132,
+            'kl' => 132,
+            
+            // Indonesia (ID: 102)
+            'อินโดนีเซีย' => 102,
+            'indonesia' => 102,
+            'บาหลี' => 102,
+            'bali' => 102,
+            'จาการ์ตา' => 102,
+            'jakarta' => 102,
+            
+            // Vietnam (ID: 240)
+            'เวียดนาม' => 240,
+            'vietnam' => 240,
+            'ฮานอย' => 240,
+            'hanoi' => 240,
+            'โฮจิมินห์' => 240,
+            'ho chi minh' => 240,
+            'saigon' => 240,
+            
+            // Other countries
+            'พม่า' => 151,
+            'myanmar' => 151,
+            'กัมพูชา' => 37,
+            'cambodia' => 37,
+            'ลาว' => 119,
+            'laos' => 119,
+            'ฟิลิปปินส์' => 174,
+            'philippines' => 174
+        ];
+        
+        // Convert to lowercase for matching
+        $lowerName = strtolower($tourName);
+        
+        // Check each pattern (case insensitive)
+        foreach ($countryPatterns as $pattern => $countryId) {
+            if (strpos($lowerName, strtolower($pattern)) !== false) {
+                return $countryId;
+            }
+        }
+        
+        return null;
+    }
+
 }

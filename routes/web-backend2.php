@@ -123,6 +123,7 @@ Route::group(['middleware' => ['Webpanel']], function () {
         });
 
         Route::prefix('tour')->group(function () {
+            Route::post('/datatable-simple', [Webpanel\SimpleTourController::class, 'datatable']);
             Route::get('/manual', [Webpanel\TourController::class, 'updateManual']);
             Route::get('/download-and-save', [Webpanel\TourController::class, 'downloadAndSave']);
             Route::get('/', [Webpanel\TourController::class, 'index']);
