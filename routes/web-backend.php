@@ -113,7 +113,9 @@ Route::group(['middleware' => ['Webpanel']], function () {
             // Additional API Management Actions
             Route::post('/{id}/toggle-status', [Webpanel\ApiManagementController::class, 'toggleStatus'])->name('toggle-status')->where(['id' => '[0-9]+']);
             Route::post('/{id}/test-connection', [Webpanel\ApiManagementController::class, 'testConnection'])->name('test-connection')->where(['id' => '[0-9]+']);
+            Route::post('/{id}/sync-manual-temp', [Webpanel\ApiManagementController::class, 'syncManualTemp'])->name('sync-manual-temp')->where(['id' => '[0-9]+']);
             Route::post('/{id}/sync-manual', [Webpanel\ApiManagementController::class, 'syncManual'])->name('sync-manual')->where(['id' => '[0-9]+']);
+            Route::get('/sync-status/{syncLogId}', [Webpanel\ApiManagementController::class, 'getSyncStatus'])->name('sync-status')->where(['syncLogId' => '[0-9]+']);
             Route::get('/sync', [Webpanel\ApiManagementController::class, 'syncFromProvider'])->name('sync');
             Route::get('/{id}/logs', [Webpanel\ApiManagementController::class, 'logs'])->name('logs')->where(['id' => '[0-9]+']);
             Route::get('/logs/{logId}', [Webpanel\ApiManagementController::class, 'logDetails'])->name('logs.details')->where(['logId' => '[0-9]+']);

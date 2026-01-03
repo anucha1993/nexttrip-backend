@@ -14,7 +14,7 @@ class ApiSyncLogModel extends Model
     
     protected $fillable = [
         'api_provider_id', 'sync_type', 'status', 'started_at', 'completed_at',
-        'total_records', 'created_tours', 'updated_tours', 'duplicated_tours', 
+        'total_records', 'created_tours', 'updated_tours', 'created_periods', 'updated_periods', 'duplicated_tours', 
         'error_count', 'error_message', 'summary'
     ];
     

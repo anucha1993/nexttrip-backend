@@ -93,20 +93,47 @@
                                                     @endif
                                                 </span>
                                             </div>
-                                            <div class="grid grid-cols-3 gap-2 mt-2 text-xs">
-                                                <div class="text-center p-1 bg-green-50 rounded">
-                                                    <div class="font-medium text-green-700">{{ $lastSync->created_tours ?? 0 }}</div>
-                                                    <div class="text-green-600">Created</div>
-                                                </div>
-                                                <div class="text-center p-1 bg-yellow-50 rounded">
-                                                    <div class="font-medium text-yellow-700">{{ $lastSync->duplicated_tours ?? 0 }}</div>
-                                                    <div class="text-yellow-600">Duplicated</div>
-                                                </div>
-                                                <div class="text-center p-1 bg-red-50 rounded">
-                                                    <div class="font-medium text-red-700">{{ $lastSync->error_count ?? 0 }}</div>
-                                                    <div class="text-red-600">Errors</div>
+                                               <div class="mt-2 p-2 bg-purple-50 rounded text-xs">
+                                                <div class="font-medium text-purple-700 mb-1 text-center">📊 Total Synced</div>
+                                                <div class="grid grid-cols-2 gap-4">
+                                                    <div class="text-center">
+                                                        <div class="font-bold text-purple-800 text-lg">{{ ($lastSync->created_tours ?? 0) + ($lastSync->duplicated_tours ?? 0) }}</div>
+                                                        <div class="text-purple-600">Tours</div>
+                                                    </div>
+                                                    <div class="text-center">
+                                                        <div class="font-bold text-purple-800 text-lg">{{ ($lastSync->created_periods ?? 0) + ($lastSync->updated_periods ?? 0) }}</div>
+                                                        <div class="text-purple-600">Periods</div>
+                                                    </div>
                                                 </div>
                                             </div>
+                                            <div class="grid grid-cols-2 gap-2 mt-2 text-xs">
+                                                <div class="p-2 bg-green-50 rounded">
+                                                    <div class="font-medium text-green-700 mb-1">🗂️ Tours</div>
+                                                    <div class="flex justify-between">
+                                                        <span class="text-green-600">✨ Created:</span>
+                                                        <span class="font-medium text-green-700">{{ $lastSync->created_tours ?? 0 }}</span>
+                                                    </div>
+                                                    <div class="flex justify-between">
+                                                        <span class="text-yellow-600">🔄 Duplicates:</span>
+                                                        <span class="font-medium text-yellow-700">{{ $lastSync->duplicated_tours ?? 0 }}</span>
+                                                    </div>
+                                                </div>
+                                                <div class="p-2 bg-blue-50 rounded">
+                                                    <div class="font-medium text-blue-700 mb-1">📅 Periods</div>
+                                                    <div class="text-center py-2">
+                                                        <div class="text-2xl font-bold text-blue-800">{{ ($lastSync->created_periods ?? 0) + ($lastSync->updated_periods ?? 0) }}</div>
+                                                        <div class="text-blue-600 text-xs mt-1">🔄 Synced (Delete & Recreate)</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                         
+                                            @if(($lastSync->error_count ?? 0) > 0)
+                                            <div class="mt-2 text-xs">
+                                                <div class="text-center p-2 bg-red-50 rounded border border-red-200">
+                                                    <div class="font-medium text-red-700">❌ {{ $lastSync->error_count ?? 0 }} Errors</div>
+                                                </div>
+                                            </div>
+                                            @endif
                                             @if($lastSync->error_message)
                                                 <div class="mt-2 p-2 bg-red-50 border-l-2 border-red-200 rounded text-xs">
                                                     <div class="font-medium text-red-700">Last Error:</div>
@@ -123,7 +150,7 @@
 
                                     <!-- Schedule Status -->
                                     @if($provider->schedules->where('is_active', true)->count() > 0)
-                                        @php $activeSchedule = $provider->schedules->where('is_active', true)->first(); @endphp
+                                        @php $activeSchedule = $provider->schedules->where('is_active', true)->sortBy('next_run_at')->first(); @endphp
                                         <div class="text-xs border-t border-slate-100 pt-2">
                                             <div class="flex items-center justify-between mb-1">
                                                 <span class="text-slate-600 font-medium">Next Schedule:</span>
@@ -302,7 +329,7 @@
         function syncManual(providerId) {
             Swal.fire({
                 title: 'Confirm Manual Sync',
-                text: 'Are you sure you want to start manual sync for this API?',
+                text: 'System will create a temporary schedule to run in 1 minutes',
                 icon: 'question',
                 showCancelButton: true,
                 confirmButtonColor: '#3085d6',
@@ -313,7 +340,8 @@
                     const modal = tailwind.Modal.getOrCreateInstance(document.querySelector("#loading-modal"));
                     modal.show();
                     
-                    fetch(`/webpanel/api-management/${providerId}/sync-manual`, {
+                    // สร้าง temporary schedule
+                    fetch(`/webpanel/api-management/${providerId}/sync-manual-temp`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
@@ -326,13 +354,13 @@
                         if (data.success) {
                             Swal.fire({
                                 icon: 'success',
-                                title: 'Sync Completed!',
+                                title: 'Schedule Created!',
                                 html: `
                                     <div class="text-left">
-                                        <p><strong>Total Records:</strong> ${data.summary.total_records}</p>
-                                        <p><strong>Created Tours:</strong> ${data.summary.created_tours}</p>
-                                        <p><strong>Duplicated Tours:</strong> ${data.summary.duplicated_tours}</p>
-                                        <p><strong>Errors:</strong> ${data.summary.error_count}</p>
+                                        <p class="mb-2">✅ Temporary schedule created successfully</p>
+                                        <p class="text-sm text-gray-600">⏰ Will run at: <strong>${data.next_run_at}</strong></p>
+                                        <p class="text-sm text-gray-600 mt-2">📊 Sync limit: <strong>${data.sync_limit ? data.sync_limit + ' records' : 'All records (no limit)'}</strong></p>
+                                        <p class="text-sm text-blue-600 mt-3">The schedule will auto-delete after sync completes</p>
                                     </div>
                                 `,
                                 confirmButtonText: 'OK'
@@ -342,7 +370,7 @@
                         } else {
                             Swal.fire({
                                 icon: 'error',
-                                title: 'Sync Failed!',
+                                title: 'Failed!',
                                 text: data.message,
                                 confirmButtonText: 'OK'
                             });
@@ -353,7 +381,7 @@
                         Swal.fire({
                             icon: 'error',
                             title: 'Error!',
-                            text: 'An error occurred during sync.',
+                            text: 'An error occurred while creating schedule.',
                             confirmButtonText: 'OK'
                         });
                     });

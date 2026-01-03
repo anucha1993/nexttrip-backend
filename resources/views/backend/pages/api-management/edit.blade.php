@@ -1614,14 +1614,22 @@ function updateStaticValueDisplay(index) {
             const url = this.action;
             const method = document.getElementById('scheduleMethod').value;
             
+            // Laravel requires POST for all requests when using FormData
+            // _method field in FormData will handle PUT/DELETE
             fetch(url, {
-                method: method,
+                method: 'POST', // Always use POST with FormData
                 body: formData,
                 headers: {
                     'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+                    'Accept': 'application/json',
                 }
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(err => Promise.reject(err));
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.success) {
                     closeScheduleModal();
@@ -1632,7 +1640,8 @@ function updateStaticValueDisplay(index) {
             })
             .catch(error => {
                 console.error('Error:', error);
-                alert('เกิดข้อผิดพลาดในการบันทึกตารางเวลา');
+                const errorMessage = error.message || error.error || 'เกิดข้อผิดพลาดในการบันทึกตารางเวลา';
+                alert('เกิดข้อผิดพลาด: ' + errorMessage);
             });
         });
 

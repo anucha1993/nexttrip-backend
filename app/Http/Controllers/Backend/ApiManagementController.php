@@ -187,6 +187,7 @@ class ApiManagementController extends Controller
                     }
                 }
             }
+            
             logger('Final headers array: ' . json_encode($headers));
             
             // Handle PDF Header file upload
@@ -711,7 +712,80 @@ class ApiManagementController extends Controller
             // Get period array field names based on field mappings
             $periodArrayFields = $this->identifyPeriodArrayFields($provider->id);
             
-            // Look for arrays that match period field patterns (top-level)
+            $totalPeriods = 0;
+            
+            // Strategy 1: Check if responseData is an array of tours (common for Zego, Tour Factory)
+            // Each tour has its own periods array
+            $isArrayOfTours = false;
+            if (array_keys($responseData) === range(0, count($responseData) - 1) && count($responseData) > 0) {
+                $firstItem = $responseData[0];
+                if (is_array($firstItem)) {
+                    // Check if first item has period fields
+                    foreach ($periodArrayFields as $fieldName) {
+                        if (isset($firstItem[$fieldName]) && is_array($firstItem[$fieldName])) {
+                            $isArrayOfTours = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if ($isArrayOfTours) {
+                // Count periods from all tours
+                foreach ($responseData as $tourData) {
+                    if (is_array($tourData)) {
+                        foreach ($periodArrayFields as $fieldName) {
+                            if (isset($tourData[$fieldName]) && is_array($tourData[$fieldName])) {
+                                $periodsArray = $tourData[$fieldName];
+                                if (array_keys($periodsArray) === range(0, count($periodsArray) - 1)) {
+                                    $totalPeriods += count($periodsArray);
+                                    break; // Found periods for this tour, move to next tour
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if ($totalPeriods > 0) {
+                    Log::info('Counted periods from array of tours', [
+                        'provider' => $provider->code,
+                        'tours_count' => count($responseData),
+                        'total_periods' => $totalPeriods
+                    ]);
+                    return $totalPeriods;
+                }
+            }
+            
+            // Strategy 2: Check if responseData has 'data' wrapper with array of tours
+            if (isset($responseData['data']) && is_array($responseData['data'])) {
+                $tours = $responseData['data'];
+                if (array_keys($tours) === range(0, count($tours) - 1) && count($tours) > 0) {
+                    foreach ($tours as $tourData) {
+                        if (is_array($tourData)) {
+                            foreach ($periodArrayFields as $fieldName) {
+                                if (isset($tourData[$fieldName]) && is_array($tourData[$fieldName])) {
+                                    $periodsArray = $tourData[$fieldName];
+                                    if (array_keys($periodsArray) === range(0, count($periodsArray) - 1)) {
+                                        $totalPeriods += count($periodsArray);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if ($totalPeriods > 0) {
+                        Log::info('Counted periods from data wrapper', [
+                            'provider' => $provider->code,
+                            'tours_count' => count($tours),
+                            'total_periods' => $totalPeriods
+                        ]);
+                        return $totalPeriods;
+                    }
+                }
+            }
+            
+            // Strategy 3: Look for arrays that match period field patterns (top-level single tour)
             foreach ($periodArrayFields as $fieldName) {
                 if (isset($responseData[$fieldName]) && is_array($responseData[$fieldName])) {
                     $array = $responseData[$fieldName];
@@ -723,7 +797,7 @@ class ApiManagementController extends Controller
                 }
             }
             
-            // Look for nested arrays (e.g., data.schedules, result.periods)
+            // Strategy 4: Look for nested arrays (e.g., data.schedules, result.periods)
             foreach ($responseData as $topKey => $topValue) {
                 if (is_array($topValue)) {
                     foreach ($periodArrayFields as $fieldName) {
@@ -1246,6 +1320,58 @@ class ApiManagementController extends Controller
         }
     }
 
+    public function syncManualTemp($id)
+    {
+        $provider = ApiProviderModel::with(['fieldMappings', 'conditions'])->findOrFail($id);
+        
+        if ($provider->status !== 'active') {
+            return response()->json([
+                'success' => false,
+                'message' => 'API Provider is not active!'
+            ], 400);
+        }
+
+        try {
+            $now = now();
+            $nextRun = $now->copy()->addMinutes(1); // รันใน 3 นาที
+            
+            // สร้าง temporary schedule
+            $schedule = new ApiScheduleModel();
+            $schedule->api_provider_id = $provider->id;
+            $schedule->name = 'Manual Sync (Temp)';
+            $schedule->frequency = 'once'; // ชั่วคราว
+            $schedule->run_time = $nextRun->format('H:i:s');
+            $schedule->is_active = 1;
+            $schedule->is_temp = 1; // Flag สำหรับ temporary schedule
+            $schedule->sync_limit = null; // No limit - sync all records
+            $schedule->next_run_at = $nextRun;
+            $schedule->created_at = $now;
+            $schedule->updated_at = $now;
+            $schedule->save();
+            
+            Log::info('Temporary schedule created for manual sync', [
+                'provider_id' => $provider->id,
+                'schedule_id' => $schedule->id,
+                'next_run_at' => $nextRun->format('Y-m-d H:i:s')
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'schedule_id' => $schedule->id,
+                'next_run_at' => $nextRun->format('d/m/Y H:i:s'),
+                'sync_limit' => $schedule->sync_limit,
+                'message' => 'Temporary schedule created successfully!'
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Failed to create temporary schedule: ' . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error creating schedule: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
     public function syncManual($id, $limit = null)
     {
         $provider = ApiProviderModel::with(['fieldMappings', 'conditions'])->findOrFail($id);
@@ -1438,6 +1564,8 @@ class ApiManagementController extends Controller
             $createdTours = 0;
             $updatedTours = 0;
             $duplicatedTours = 0;
+            $createdPeriods = 0;
+            $updatedPeriods = 0;
             $errorCount = 0;
             $errors = [];
 
@@ -1452,12 +1580,24 @@ class ApiManagementController extends Controller
                         
                         $result = $this->processTourData($provider, $tourData, $syncLog);
                         
+                        // Debug log
+                        Log::info("Tour processed result", [
+                            'provider' => $provider->code,
+                            'action' => $result['action'] ?? 'unknown',
+                            'periods_count' => $result['periods_count'] ?? 0,
+                            'tour_index' => $currentIndex
+                        ]);
+                        
                         if ($result['action'] === 'created') {
                             $createdTours++;
+                            $createdPeriods += $result['periods_count'] ?? 0;
                         } elseif ($result['action'] === 'updated') {
                             $updatedTours++;
+                            $updatedPeriods += $result['periods_count'] ?? 0;
                         } elseif ($result['action'] === 'duplicated') {
                             $duplicatedTours++;
+                            // Still count periods from duplicates since they are updated with new period data
+                            $updatedPeriods += $result['periods_count'] ?? 0;
                         }
                         
                     } catch (\Exception $e) {
@@ -1539,12 +1679,23 @@ class ApiManagementController extends Controller
             }
 
             // อัปเดตข้อมูลการซิงค์ลงในฐานข้อมูล
+            Log::info('Updating sync log with final counts', [
+                'provider' => $provider->code,
+                'createdTours' => $createdTours,
+                'duplicatedTours' => $duplicatedTours,
+                'createdPeriods' => $createdPeriods,
+                'updatedPeriods' => $updatedPeriods,
+                'totalRecords' => $totalRecords
+            ]);
+            
             $syncLog->update([
                 'status' => 'completed',
                 'completed_at' => now(),
                 'total_records' => $totalRecords,
                 'created_tours' => $createdTours,
                 'updated_tours' => $updatedTours,
+                'created_periods' => $createdPeriods,
+                'updated_periods' => $updatedPeriods,
                 'duplicated_tours' => $duplicatedTours,
                 'error_count' => $errorCount,
                 'error_message' => $errorCount > 0 ? implode('; ', array_slice($errors, 0, 5)) : null,
@@ -1552,6 +1703,8 @@ class ApiManagementController extends Controller
                     'total_records' => $totalRecords,
                     'created_tours' => $createdTours,
                     'updated_tours' => $updatedTours,
+                    'created_periods' => $createdPeriods,
+                    'updated_periods' => $updatedPeriods,
                     'duplicated_tours' => $duplicatedTours,
                     'error_count' => $errorCount,
                     'errors' => array_slice($errors, 0, 10) // เก็บ error แค่ 10 ตัวแรก
@@ -1563,6 +1716,8 @@ class ApiManagementController extends Controller
                 'summary' => [
                     'total_records' => $totalRecords,
                     'created_tours' => $createdTours,
+                    'created_periods' => $createdPeriods,
+                    'updated_periods' => $updatedPeriods,
                     'duplicated_tours' => $duplicatedTours,
                     'error_count' => $errorCount
                 ]
@@ -1634,6 +1789,8 @@ class ApiManagementController extends Controller
         $createdTours = 0;
         $duplicatedTours = 0;
         $skippedTours = 0;
+        $createdPeriods = 0;
+        $updatedPeriods = 0;
         $errorCount = 0;
         $errors = [];
         $processedCount = 0;
@@ -1720,8 +1877,13 @@ class ApiManagementController extends Controller
                     // Track creation status
                     if ($result['action'] === 'created') {
                         $createdTours++;
+                        $createdPeriods += $result['periods_count'] ?? 0;
+                    } elseif ($result['action'] === 'updated') {
+                        $updatedPeriods += $result['periods_count'] ?? 0;
                     } elseif ($result['action'] === 'duplicated') {
                         $duplicatedTours++;
+                        // Still count periods from duplicates since they are updated with new period data
+                        $updatedPeriods += $result['periods_count'] ?? 0;
                     }
                     
                     // Process GO365 periods from detail response (for both new and existing tours)
@@ -1750,6 +1912,9 @@ class ApiManagementController extends Controller
                     if ($result['action'] === 'created' || $result['action'] === 'updated') {
                         if ($result['action'] === 'created') {
                             $createdTours++;
+                            $createdPeriods += $result['periods_count'] ?? 0;
+                        } else {
+                            $updatedPeriods += $result['periods_count'] ?? 0;
                         }
                         
                         Log::info('Tour processed, now processing periods', [
@@ -1769,9 +1934,11 @@ class ApiManagementController extends Controller
                                 'first_period_keys' => array_keys($periods[0])
                             ]);
                             
+                            $periodsCreatedCount = 0;
                             foreach ($periods as $singlePeriod) {
                                 try {
                                     $this->createPeriodFromArray($provider, $singlePeriod, $result['tour_model']);
+                                    $periodsCreatedCount++;
                                 } catch (\Exception $e) {
                                     Log::error('Error creating period', [
                                         'tour_id' => $result['tour_model']->id,
@@ -1780,9 +1947,18 @@ class ApiManagementController extends Controller
                                     ]);
                                 }
                             }
+                            
+                            // Add to appropriate counter
+                            if ($result['action'] === 'created') {
+                                $createdPeriods += $periodsCreatedCount;
+                            } else {
+                                $updatedPeriods += $periodsCreatedCount;
+                            }
                         }
                     } elseif ($result['action'] === 'duplicated') {
                         $duplicatedTours++;
+                        // Still count periods from duplicates since they are updated with new period data
+                        $updatedPeriods += $result['periods_count'] ?? 0;
                     }
                     
                     $processedCount++;
@@ -1793,17 +1969,21 @@ class ApiManagementController extends Controller
                         
                         if ($result['action'] === 'created') {
                             $createdTours++;
+                            $createdPeriods += $result['periods_count'] ?? 0;
                             
                             // Process periods if period URL pattern exists
                             if (!empty($config['period_url_pattern'])) {
                                 // Use program's P_ID, not programData's
                                 $programIdForPeriod = $program['P_ID'] ?? $programData['P_ID'];
-                                $this->processPeriodsFromConfig($provider, $result['tour_model'], $programIdForPeriod);
+                                $periodsCount = $this->processPeriodsFromConfig($provider, $result['tour_model'], $programIdForPeriod);
+                                $createdPeriods += $periodsCount;
                             }
-                        } elseif ($result['action'] === 'skipped') {
-                            $skippedTours++;
+                        } elseif ($result['action'] === 'updated') {
+                            $updatedPeriods += $result['periods_count'] ?? 0;
                         } elseif ($result['action'] === 'duplicated') {
                             $duplicatedTours++;
+                            // Still count periods from duplicates since they are updated with new period data
+                            $updatedPeriods += $result['periods_count'] ?? 0;
                         }
                         
                         $processedCount++;
@@ -1899,12 +2079,16 @@ class ApiManagementController extends Controller
             'completed_at' => now(),
             'total_records' => $processedCount,
             'created_tours' => $createdTours,
+            'created_periods' => $createdPeriods,
+            'updated_periods' => $updatedPeriods,
             'duplicated_tours' => $duplicatedTours,
             'error_count' => $errorCount,
             'error_message' => $errorCount > 0 ? implode('; ', array_slice($errors, 0, 5)) : null,
             'summary' => [
                 'total_records' => $processedCount,
                 'created_tours' => $createdTours,
+                'created_periods' => $createdPeriods,
+                'updated_periods' => $updatedPeriods,
                 'duplicated_tours' => $duplicatedTours,
                 'skipped_tours' => $skippedTours,
                 'error_count' => $errorCount,
@@ -1917,6 +2101,8 @@ class ApiManagementController extends Controller
             'summary' => [
                 'total_records' => $processedCount,
                 'created_tours' => $createdTours,
+                'created_periods' => $createdPeriods,
+                'updated_periods' => $updatedPeriods,
                 'duplicated_tours' => $duplicatedTours,
                 'skipped_tours' => $skippedTours,
                 'error_count' => $errorCount
@@ -1979,7 +2165,7 @@ class ApiManagementController extends Controller
                     'program_id' => $programId,
                     'status' => $response->status()
                 ]);
-                return;
+                return 0;
             }
             
             $periodsData = $response->json();
@@ -1998,19 +2184,22 @@ class ApiManagementController extends Controller
                     'tour_id' => $tourModel->id,
                     'periods_count' => is_array($periodsData) ? count($periodsData) : 0
                 ]);
-                $this->processTTNJapanPeriods($provider, $tourModel, $periodsData);
+                return $this->processTTNJapanPeriods($provider, $tourModel, $periodsData);
             } else {
                 // Generic period processing for other APIs
+                $createdCount = 0;
                 if (count($periodsData) > 0) {
                     foreach ($periodsData as $periodData) {
                         if (isset($periodData['Price']) && is_array($periodData['Price'])) {
                             foreach ($periodData['Price'] as $priceData) {
                                 // Create period using database mappings
                                 $this->createPeriodFromArray($provider, array_merge($periodData, $priceData), $tourModel);
+                                $createdCount++;
                             }
                         }
                     }
                 }
+                return $createdCount;
             }
             
         } catch (\Exception $e) {
@@ -2019,6 +2208,7 @@ class ApiManagementController extends Controller
                 'program_id' => $programId,
                 'error' => $e->getMessage()
             ]);
+            return 0;
         }
     }
 
@@ -2027,9 +2217,10 @@ class ApiManagementController extends Controller
         // TTN Japan period logic (เหมือน headcode 100%)
         try {
             if (!is_array($periodsData) || count($periodsData) === 0) {
-                return;
+                return 0;
             }
 
+            $createdCount = 0;
             foreach ($periodsData as $periodGroup) {
                 if (!isset($periodGroup['Price']) || !is_array($periodGroup['Price'])) {
                     continue;
@@ -2077,6 +2268,7 @@ class ApiManagementController extends Controller
 
                     $periodModel->api_type = 'ttn';
                     $periodModel->save();
+                    $createdCount++;
 
                     Log::info('TTN Japan period created/updated', [
                         'tour_id' => $tourModel->id,
@@ -2089,11 +2281,13 @@ class ApiManagementController extends Controller
                 }
             }
 
+            return $createdCount;
         } catch (\Exception $e) {
             Log::error('Error processing TTN Japan periods', [
                 'tour_id' => $tourModel->id,
                 'error' => $e->getMessage()
             ]);
+            return 0;
         }
     }
 
@@ -2403,6 +2597,9 @@ class ApiManagementController extends Controller
             }
             
             // Process all collected tours
+            $createdPeriods = 0;
+            $updatedPeriods = 0;
+            
             Log::info('Best Consortium: Starting to process tours', [
                 'total_tours' => count($toursToProcess)
             ]);
@@ -2419,10 +2616,14 @@ class ApiManagementController extends Controller
                     
                     if ($result['action'] === 'created') {
                         $createdTours++;
+                        $createdPeriods += $result['periods_count'] ?? 0;
                     } elseif ($result['action'] === 'updated') {
                         $createdTours++; // Count updates as processed
+                        $updatedPeriods += $result['periods_count'] ?? 0;
                     } elseif ($result['action'] === 'duplicated') {
                         $duplicatedTours++;
+                        // Still count periods from duplicates since they are updated with new period data
+                        $updatedPeriods += $result['periods_count'] ?? 0;
                     }
                     
                 } catch (\Exception $e) {
@@ -2506,6 +2707,8 @@ class ApiManagementController extends Controller
                 'total_records' => count($toursToProcess),
                 'created_tours' => $createdTours,
                 'duplicated_tours' => $duplicatedTours,
+                'created_periods' => $createdPeriods,
+                'updated_periods' => $updatedPeriods,
                 'error_count' => $errorCount,
                 'error_message' => $errorCount > 0 ? implode('; ', array_slice($errors, 0, 5)) : null,
                 'summary' => [
@@ -2513,6 +2716,8 @@ class ApiManagementController extends Controller
                     'total_records' => count($toursToProcess),
                     'created_tours' => $createdTours,
                     'duplicated_tours' => $duplicatedTours,
+                    'created_periods' => $createdPeriods,
+                    'updated_periods' => $updatedPeriods,
                     'error_count' => $errorCount,
                     'errors' => array_slice($errors, 0, 10)
                 ]
@@ -2525,6 +2730,8 @@ class ApiManagementController extends Controller
                     'total_records' => count($toursToProcess),
                     'created_tours' => $createdTours,
                     'duplicated_tours' => $duplicatedTours,
+                    'created_periods' => $createdPeriods,
+                    'updated_periods' => $updatedPeriods,
                     'error_count' => $errorCount
                 ]
             ];
@@ -2639,6 +2846,9 @@ class ApiManagementController extends Controller
             }
             
             // Process tours (each tour has multiple periods)
+            $createdPeriods = 0;
+            $updatedPeriods = 0;
+            
             foreach ($tourGroups as $mainid => $periodRecords) {
                 try {
                     // Use first record for tour data (all periods have same tour info)
@@ -2649,12 +2859,19 @@ class ApiManagementController extends Controller
                     
                     $result = $this->processTourData($provider, $tourData, $syncLog);
                     
+                    // Count periods (number of period records for this tour)
+                    $periodCount = count($periodRecords);
+                    
                     if ($result['action'] === 'created') {
                         $createdTours++;
+                        $createdPeriods += $periodCount;
                     } elseif ($result['action'] === 'updated') {
                         $createdTours++;
+                        $updatedPeriods += $periodCount;
                     } elseif ($result['action'] === 'duplicated') {
                         $duplicatedTours++;
+                        // Still count periods from duplicates since they are updated with new period data
+                        $updatedPeriods += $periodCount;
                     }
                     
                 } catch (\Exception $e) {
@@ -2738,6 +2955,8 @@ class ApiManagementController extends Controller
                 'total_records' => count($allTours),
                 'created_tours' => $createdTours,
                 'duplicated_tours' => $duplicatedTours,
+                'created_periods' => $createdPeriods,
+                'updated_periods' => $updatedPeriods,
                 'error_count' => $errorCount,
                 'error_message' => $errorCount > 0 ? implode('; ', array_slice($errors, 0, 5)) : null,
                 'summary' => [
@@ -2746,6 +2965,8 @@ class ApiManagementController extends Controller
                     'total_tours' => count($tourGroups),
                     'created_tours' => $createdTours,
                     'duplicated_tours' => $duplicatedTours,
+                    'created_periods' => $createdPeriods,
+                    'updated_periods' => $updatedPeriods,
                     'error_count' => $errorCount,
                     'errors' => array_slice($errors, 0, 10)
                 ]
@@ -2862,20 +3083,54 @@ class ApiManagementController extends Controller
             ])->whereNull('deleted_at')->first();
         }
         
-        // For GO365, also check by tour_code to prevent duplicate constraint violations
-        if (!$existingTour && $provider->code === 'go365' && isset($tourData['tour_code'])) {
-            $existingTour = TourModel::where([
-                'code1' => $tourData['tour_code'],
-                'api_type' => $provider->code
-            ])->whereNull('deleted_at')->first();
-        }
-        
-        // For Best Consortium, also check by code1 (tour code from API) to prevent duplicate constraint violations
-        if (!$existingTour && ($provider->code === 'bestconsortium' || $provider->code === 'best') && isset($tourData['id'])) {
-            $existingTour = TourModel::where([
-                'code1' => $tourData['id'],
-                'api_type' => $provider->code
-            ])->whereNull('deleted_at')->first();
+        // Universal code1 check for all APIs to prevent duplicate constraint violations
+        if (!$existingTour) {
+            // Get the field mapping for code1 to know which API field maps to code1
+            $code1Mapping = $provider->fieldMappings()
+                ->where('field_type', 'tour')
+                ->where('local_field', 'code1')
+                ->first();
+            
+            if ($code1Mapping && isset($tourData[$code1Mapping->api_field])) {
+                $code1Value = $tourData[$code1Mapping->api_field];
+                
+                if (!empty($code1Value)) {
+                    $existingTour = TourModel::where('code1', $code1Value)
+                        ->whereNull('deleted_at')
+                        ->first();
+                    
+                    if ($existingTour) {
+                        Log::info('Found existing tour by code1 (universal check)', [
+                            'provider' => $provider->code,
+                            'api_field' => $code1Mapping->api_field,
+                            'code1' => $code1Value,
+                            'tour_id' => $existingTour->id,
+                            'existing_api_type' => $existingTour->api_type
+                        ]);
+                    }
+                }
+            } else {
+                // Fallback: Try common field names if no mapping found
+                $possibleCodeFields = ['tour_code', 'code', 'id', 'product_code', 'program_code'];
+                foreach ($possibleCodeFields as $field) {
+                    if (isset($tourData[$field]) && !empty($tourData[$field])) {
+                        $existingTour = TourModel::where('code1', $tourData[$field])
+                            ->whereNull('deleted_at')
+                            ->first();
+                        
+                        if ($existingTour) {
+                            Log::info('Found existing tour by code1 (fallback check)', [
+                                'provider' => $provider->code,
+                                'field_used' => $field,
+                                'code1' => $tourData[$field],
+                                'tour_id' => $existingTour->id,
+                                'existing_api_type' => $existingTour->api_type
+                            ]);
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         if ($existingTour) {
@@ -2911,8 +3166,9 @@ class ApiManagementController extends Controller
             $existingTour->save();
             
             // Update periods - remove old ones and create new ones
+            $oldPeriodsCount = $existingTour->period()->count();
             $existingTour->period()->delete();
-            $this->processPeriods($provider, $tourData, $existingTour);
+            $updatedPeriodsCount = $this->processPeriods($provider, $tourData, $existingTour);
             
             // Update tour price based on new periods
             $this->updateTourPrice($existingTour);
@@ -2927,7 +3183,12 @@ class ApiManagementController extends Controller
                 'status' => 'updated'  // Changed from 'pending' to 'updated'
             ]);
             
-            return ['action' => 'updated', 'tour_id' => $existingTour->id, 'tour_model' => $existingTour];
+            return [
+                'action' => 'duplicated',  // Changed from 'updated' to 'duplicated' - existing tours counted as duplicates
+                'tour_id' => $existingTour->id, 
+                'tour_model' => $existingTour,
+                'periods_count' => $updatedPeriodsCount
+            ];
         }
 
         // สร้างทัวร์ใหม่
@@ -2944,6 +3205,81 @@ class ApiManagementController extends Controller
 
         $tourModel->code = $tourCode;
         $tourModel->api_id = $apiId;  // ใช้ api_id เป็นมาตรฐานสำหรับทุก API
+        
+        // ⚠️ CHECK DUPLICATE CODE1 BEFORE MAPPING - Use API data directly
+        $code1Mapping = $provider->fieldMappings()
+            ->where('field_type', 'tour')
+            ->where('local_field', 'code1')
+            ->first();
+        
+        if ($code1Mapping && isset($tourData[$code1Mapping->api_field])) {
+            $code1Value = $tourData[$code1Mapping->api_field];
+            
+            if (!empty($code1Value)) {
+                Log::info('Checking duplicate code1 from API data', [
+                    'provider' => $provider->code,
+                    'api_field' => $code1Mapping->api_field,
+                    'code1_value' => $code1Value,
+                    'api_id' => $apiId
+                ]);
+                
+                // Use transaction lock to prevent race condition
+                // IMPORTANT: Check including soft deleted tours because uk_tour_code1 constraint checks ALL rows
+                $duplicateTour = \DB::transaction(function() use ($code1Value) {
+                    // First check active tours
+                    $activeTour = TourModel::where('code1', $code1Value)
+                        ->whereNull('deleted_at')
+                        ->lockForUpdate()
+                        ->first();
+                    
+                    if ($activeTour) {
+                        return $activeTour;
+                    }
+                    
+                    // Also check soft deleted tours (constraint will fail anyway)
+                    return TourModel::where('code1', $code1Value)
+                        ->whereNotNull('deleted_at')
+                        ->lockForUpdate()
+                        ->first();
+                });
+                
+                if ($duplicateTour) {
+                    $isDeleted = $duplicateTour->deleted_at !== null;
+                    
+                    Log::warning('Duplicate code1 found - SKIPPING tour creation', [
+                        'provider' => $provider->code,
+                        'code1' => $code1Value,
+                        'existing_tour_id' => $duplicateTour->id,
+                        'existing_api_type' => $duplicateTour->api_type,
+                        'is_deleted' => $isDeleted,
+                        'deleted_at' => $duplicateTour->deleted_at,
+                        'api_id' => $apiId
+                    ]);
+                    
+                    // Log as duplicate
+                    TourDuplicateModel::create([
+                        'api_provider_id' => $provider->id,
+                        'sync_log_id' => $syncLog->id,
+                        'api_id' => $apiId,
+                        'existing_tour_id' => $duplicateTour->id,
+                        'api_data' => $tourData,
+                        'status' => 'duplicate_skipped'
+                    ]);
+                    
+                    return [
+                        'action' => 'duplicated',  // Changed from 'skipped' to 'duplicated' for consistency
+                        'reason' => 'duplicate_code1',
+                        'tour_id' => $duplicateTour->id,
+                        'tour_model' => $duplicateTour,
+                        'periods_count' => 0
+                    ];
+                }
+                
+                Log::info('No duplicate found, proceeding with tour creation', [
+                    'code1' => $code1Value
+                ]);
+            }
+        }
         
         // จัดการ wholesale_id ให้เฉพาะแต่ละ API (เหมือน headcode เดิม)
         $tourModel->group_id = 3; // Wholesale group
@@ -2997,19 +3333,39 @@ class ApiManagementController extends Controller
         // Process PDF if exists  
         $this->processPDF($provider, $tourData, $tourModel);
         
+        // *** DEBUG: Log all attributes before save ***
+        Log::info('About to save new tour', [
+            'provider' => $provider->code,
+            'api_id' => $apiId,
+            'code' => $tourModel->code,
+            'code1' => $tourModel->code1,
+            'name' => $tourModel->name,
+            'all_attributes' => $tourModel->getAttributes()
+        ]);
+        
         try {
             $tourModel->save();
         } catch (\Illuminate\Database\QueryException $e) {
-            // Handle duplicate constraint violations
+            // Handle duplicate constraint violations - just skip and log
             if ($e->getCode() == 23000 && strpos($e->getMessage(), 'Duplicate entry') !== false) {
-                // Try to find the existing tour again (might have been created by another process)
-                $existingTour = TourModel::where([
-                    'code1' => $tourData['tour_code'] ?? '',
-                    'api_type' => $provider->code
-                ])->orWhere([
+                Log::warning('Caught duplicate constraint violation during save - SKIPPING', [
+                    'provider' => $provider->code,
+                    'code1' => $tourModel->code1,
                     'api_id' => $apiId,
-                    'api_type' => $provider->code
-                ])->whereNull('deleted_at')->first();
+                    'error' => $e->getMessage()
+                ]);
+                
+                // Try to find the existing tour
+                $existingTour = TourModel::where('code1', $tourModel->code1)
+                    ->whereNull('deleted_at')
+                    ->first();
+                
+                if (!$existingTour) {
+                    $existingTour = TourModel::where([
+                        'api_id' => $apiId,
+                        'api_type' => $provider->code
+                    ])->whereNull('deleted_at')->first();
+                }
                 
                 if ($existingTour) {
                     // Log as duplicate
@@ -3022,16 +3378,27 @@ class ApiManagementController extends Controller
                         'status' => 'duplicate_constraint'
                     ]);
                     
-                    return ['action' => 'duplicated', 'tour_id' => $existingTour->id, 'tour_model' => $existingTour];
+                    return [
+                        'action' => 'skipped', 
+                        'reason' => 'duplicate_constraint',
+                        'tour_id' => $existingTour->id, 
+                        'tour_model' => $existingTour,
+                        'periods_count' => 0
+                    ];
                 }
             }
             
             // Re-throw if not a duplicate constraint violation or couldn't find existing tour
+            Log::error('Failed to save tour, re-throwing exception', [
+                'provider' => $provider->code,
+                'api_id' => $apiId,
+                'error' => $e->getMessage()
+            ]);
             throw $e;
         }
         
         // Process periods if exists
-        $this->processPeriods($provider, $tourData, $tourModel);
+        $createdPeriodsCount = $this->processPeriods($provider, $tourData, $tourModel);
         
         // TTN Japan/All: ถ้าไม่มี periods ให้ลบ tour (ไม่ sync tours ที่ไม่มี periods)
         if (($provider->code === 'ttn_japan' || $provider->code === 'ttn_all')) {
@@ -3044,14 +3411,19 @@ class ApiManagementController extends Controller
                     'api_id' => $tourModel->api_id
                 ]);
                 $tourModel->delete();
-                return ['action' => 'skipped', 'reason' => 'no_periods'];
+                return ['action' => 'skipped', 'reason' => 'no_periods', 'periods_count' => 0];
             }
         }
         
         // Update tour price based on periods
         $this->updateTourPrice($tourModel);
         
-        return ['action' => 'created', 'tour_id' => $tourModel->id, 'tour_model' => $tourModel];
+        return [
+            'action' => 'created', 
+            'tour_id' => $tourModel->id, 
+            'tour_model' => $tourModel,
+            'periods_count' => $createdPeriodsCount
+        ];
     }
 
     private function mapTourFieldsFromConfig($provider, $tourData, $tourModel, $isUpdating = false)
@@ -4362,7 +4734,7 @@ class ApiManagementController extends Controller
                 'provider' => $provider->code,
                 'tour_id' => $tourModel->id
             ]);
-            return;
+            return 0;
         }
         
         // Check if there are period mappings
@@ -4372,13 +4744,35 @@ class ApiManagementController extends Controller
                 'provider' => $provider->code,
                 'tour_id' => $tourModel->id
             ]);
-            $this->createDefaultPeriod($provider, $tourData, $tourModel);
-            return;
+            return $this->createDefaultPeriod($provider, $tourData, $tourModel);
         }
         
         // Strategy 1: Check for separate periods array field
-        // First, try common period field names directly in tour data
+        // First, check field mappings for array type (e.g., Zego uses 'Periods')
+        $arrayMapping = $provider->fieldMappings()
+            ->where('field_type', 'period')
+            ->where('data_type', 'array')
+            ->first();
+        
+        Log::info('Checking for periods array field mapping', [
+            'provider' => $provider->code,
+            'array_mapping_found' => $arrayMapping ? true : false,
+            'api_field' => $arrayMapping ? $arrayMapping->api_field : null,
+            'local_field' => $arrayMapping ? $arrayMapping->local_field : null
+        ]);
+        
         $periodArrayFields = ['period', 'periods', 'Periods', 'tour_periods'];
+        
+        // Add the mapped field from database if exists
+        if ($arrayMapping && !in_array($arrayMapping->api_field, $periodArrayFields)) {
+            array_unshift($periodArrayFields, $arrayMapping->api_field);
+            Log::info('Added mapped field to search list', [
+                'provider' => $provider->code,
+                'api_field' => $arrayMapping->api_field,
+                'search_order' => $periodArrayFields
+            ]);
+        }
+        
         $periodsArray = null;
         $foundPeriodField = null;
         
@@ -4400,14 +4794,39 @@ class ApiManagementController extends Controller
             
             // เก็บ max discount percent สำหรับ Zego
             $maxDiscountPercents = [];
+            $createdCount = 0;
             
             foreach ($periodsArray as $periodData) {
-                $period = $this->createPeriodFromArray($provider, $periodData, $tourModel, $tourData);
-                
-                // Zego-specific: เก็บ discount percent
-                if ($provider->code === 'zego' && $period) {
-                    $discountPercent = $this->calculateZegoPeriodDiscount($period);
-                    $maxDiscountPercents[] = $discountPercent;
+                try {
+                    $period = $this->createPeriodFromArray($provider, $periodData, $tourModel, $tourData);
+                    
+                    if ($period) {
+                        $createdCount++;
+                        Log::info('Period created successfully', [
+                            'provider' => $provider->code,
+                            'tour_id' => $tourModel->id,
+                            'period_id' => $period->id,
+                            'created_count' => $createdCount
+                        ]);
+                    } else {
+                        Log::warning('createPeriodFromArray returned null', [
+                            'provider' => $provider->code,
+                            'tour_id' => $tourModel->id
+                        ]);
+                    }
+                    
+                    // Zego-specific: เก็บ discount percent
+                    if ($provider->code === 'zego' && $period) {
+                        $discountPercent = $this->calculateZegoPeriodDiscount($period);
+                        $maxDiscountPercents[] = $discountPercent;
+                    }
+                } catch (\Exception $e) {
+                    Log::error('Error creating period from array', [
+                        'provider' => $provider->code,
+                        'tour_id' => $tourModel->id,
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString()
+                    ]);
                 }
             }
             
@@ -4416,7 +4835,14 @@ class ApiManagementController extends Controller
                 $this->updateZegoPromotion($tourModel, max($maxDiscountPercents));
             }
             
-            return;
+            Log::info('Finished creating periods from array', [
+                'provider' => $provider->code,
+                'tour_id' => $tourModel->id,
+                'total_created' => $createdCount,
+                'array_length' => count($periodsArray)
+            ]);
+            
+            return $createdCount;
         }
         
         // Strategy 2: Check for direct period fields in tour data
@@ -4437,8 +4863,7 @@ class ApiManagementController extends Controller
                     'tour_id' => $tourModel->id,
                     'found_fields' => $directPeriodFields
                 ]);
-                $this->createPeriodFromTourData($provider, $tourData, $tourModel);
-                return;
+                return $this->createPeriodFromTourData($provider, $tourData, $tourModel);
             }
         }
         
@@ -4458,8 +4883,7 @@ class ApiManagementController extends Controller
                 'tour_id' => $tourModel->id,
                 'common_fields_found' => array_keys(array_intersect_key($tourData, array_flip($commonPeriodFields)))
             ]);
-            $this->createPeriodFromTourData($provider, $tourData, $tourModel);
-            return;
+            return $this->createPeriodFromTourData($provider, $tourData, $tourModel);
         }
         
         // Strategy 3: For multi-step APIs, call period endpoint (TTN Japan, GO365)
@@ -4470,8 +4894,7 @@ class ApiManagementController extends Controller
                 'tour_id' => $tourModel->id,
                 'tour_api_id' => $tourModel->api_id
             ]);
-            $this->processPeriodsFromConfig($provider, $tourModel, $tourModel->api_id);
-            return;
+            return $this->processPeriodsFromConfig($provider, $tourModel, $tourModel->api_id);
         }
         
         // Strategy 4: Create default period if no period data found
@@ -4479,7 +4902,7 @@ class ApiManagementController extends Controller
             'provider' => $provider->code,
             'tour_id' => $tourModel->id
         ]);
-        $this->createDefaultPeriod($provider, $tourData, $tourModel);
+        return $this->createDefaultPeriod($provider, $tourData, $tourModel);
     }
 
     private function createPeriodFromTourData($provider, $tourData, $tourModel)
@@ -4499,6 +4922,7 @@ class ApiManagementController extends Controller
         }
         
         // สร้าง period ตามจำนวนที่ระบุ
+        $createdCount = 0;
         for ($i = 0; $i < max(1, $periodCount); $i++) {
             $period = $this->createBasePeriod($provider, $tourModel);
             
@@ -4532,7 +4956,10 @@ class ApiManagementController extends Controller
             $period->offsetUnset('status_period_text');
             
             $period->save();
+            $createdCount++;
         }
+        
+        return $createdCount;
     }
 
     private function createPeriodFromArray($provider, $periodData, $tourModel, $tourData = null)
@@ -4673,6 +5100,8 @@ class ApiManagementController extends Controller
         $period->offsetUnset('status_period_text');
         
         $period->save();
+        
+        return 1;
     }
 
     private function createBasePeriod($provider, $tourModel)
@@ -5219,13 +5648,21 @@ class ApiManagementController extends Controller
                 ], 400);
             }
             
-            // ใช้ performSync เดียวสำหรับทุก provider
-            $result = $this->performSync($provider, 'manual', 0);
+            // สร้าง sync log ก่อน
+            $syncLog = \App\Models\Backend\ApiSyncLogModel::create([
+                'api_provider_id' => $provider->id,
+                'sync_type' => 'manual',
+                'status' => 'running',
+                'started_at' => now()
+            ]);
+            
+            // Dispatch job to queue
+            \App\Jobs\SyncApiProviderJob::dispatch($provider->id, 'manual', $syncLog->id);
             
             return response()->json([
                 'success' => true,
-                'message' => 'Sync completed successfully',
-                'data' => $result
+                'message' => 'Sync started in background',
+                'sync_log_id' => $syncLog->id
             ]);
             
         } catch (\Exception $e) {
@@ -5239,6 +5676,36 @@ class ApiManagementController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Sync failed: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function getSyncStatus($syncLogId)
+    {
+        try {
+            $syncLog = \App\Models\Backend\ApiSyncLogModel::findOrFail($syncLogId);
+            
+            return response()->json([
+                'success' => true,
+                'status' => $syncLog->status,
+                'data' => [
+                    'started_at' => $syncLog->started_at,
+                    'completed_at' => $syncLog->completed_at,
+                    'total_records' => $syncLog->total_records,
+                    'created_tours' => $syncLog->created_tours,
+                    'updated_tours' => $syncLog->updated_tours,
+                    'created_periods' => $syncLog->created_periods,
+                    'updated_periods' => $syncLog->updated_periods,
+                    'duplicated_tours' => $syncLog->duplicated_tours,
+                    'error_count' => $syncLog->error_count,
+                    'error_message' => $syncLog->error_message
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error getting sync status: ' . $e->getMessage()
             ], 500);
         }
     }
@@ -5913,10 +6380,12 @@ class ApiManagementController extends Controller
             }
         }
         
+        // Set data_type for all API tours (both new and update)
+        $tourModel->data_type = 2; // 1 system , 2 api
+        
         // Set special configuration values (like original code) - เฉพาะ new tour เท่านั้น
         if (!$isUpdating) {
             $tourModel->image_check_change = 2; // 1 ไม่ดึงรูปจาก Api , 2 ดึงรูปจาก Api
-            $tourModel->data_type = 2; // 1 system , 2 api
             $tourModel->api_type = 'ttn';
             
             // wholesale_id and group_id are already set by config, but ensure they're correct
