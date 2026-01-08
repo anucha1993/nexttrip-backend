@@ -556,10 +556,10 @@ class HomeController extends Controller
         sort($day_num);
         $tour_data = TourModel::whereIn('id', $tour_id)->where('status','on')->whereNull('deleted_at')->get();
         foreach($tour_data as $t){
-            $country_id = array_merge(json_decode($t->country_id,true),$country_id);
-            $city_id = array_merge(json_decode($t->city_id,true),$city_id);
-            $province_id = array_merge(json_decode($t->province_id,true),$province_id);
-            $amupur_id = array_merge(json_decode($t->district_id,true),$amupur_id);
+            $country_id = array_merge(json_decode($t->country_id,true) ?? [],$country_id);
+            $city_id = array_merge(json_decode($t->city_id,true) ?? [],$city_id);
+            $province_id = array_merge(json_decode($t->province_id,true) ?? [],$province_id);
+            $amupur_id = array_merge(json_decode($t->district_id,true) ?? [],$amupur_id);
             $airline_id[] = $t->airline_id;
             $rating[] = $t->rating?$t->rating:"0";
             if($t->special_price > 0){

@@ -45,6 +45,11 @@ class ApiProviderModel extends Model
         return $this->hasMany(ApiSyncLogModel::class, 'api_provider_id');
     }
     
+    public function lastSync()
+    {
+        return $this->hasOne(ApiSyncLogModel::class, 'api_provider_id')->latest('started_at');
+    }
+    
     public function duplicates()
     {
         return $this->hasMany(TourDuplicateModel::class, 'api_provider_id');

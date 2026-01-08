@@ -159,14 +159,14 @@
                     <tr class="hover:bg-gray-50">
                         <td class="px-6 py-4 whitespace-nowrap">
                             <span class="px-2 py-1 text-xs font-medium rounded-full {{ 
-                                $log->sync_type == 'manual' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'
+                                $log->sync_type == 'manual' ? 'bg-blue-100 text-blue-800' : ($log->sync_type == 'scheduled' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800')
                             }}">
                                 @if($log->sync_type == 'manual')
                                     👤 Manual
-                                @elseif($log->sync_type == 'auto')
+                                @elseif($log->sync_type == 'scheduled')
                                     ⏰ Scheduled
                                 @else
-                                    ❓ Unknown
+                                    👤 Manual Sync
                                 @endif
                             </span>
                         </td>
@@ -193,12 +193,22 @@
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             <div class="flex flex-col space-y-1 text-xs">
-                                <span class="text-blue-600">Total: {{ $log->total_records ?? 0 }}</span>
-                                <span class="text-green-600">Created: {{ $log->created_tours ?? 0 }}</span>
-                                <span class="text-orange-600">Updated: {{ $log->updated_tours ?? 0 }}</span>
-                                <span class="text-purple-600">Duplicated: {{ $log->duplicated_tours ?? 0 }}</span>
+                                <div class="font-medium text-gray-700 mb-1">🗂️ Tours:</div>
+                                <span class="text-blue-600 ml-2">Total: {{ $log->total_records ?? 0 }}</span>
+                                <span class="text-green-600 ml-2">Created: {{ $log->created_tours ?? 0 }}</span>
+                                <span class="text-purple-600 ml-2">Duplicated: {{ $log->duplicated_tours ?? 0 }}</span>
+                                
+                                <div class="font-medium text-gray-700 mt-2 mb-1">📅 Periods:</div>
+                                @php
+                                    $totalPeriods = ($log->created_periods ?? 0) + ($log->updated_periods ?? 0);
+                                @endphp
+                                <span class="text-blue-600 ml-2 font-semibold">Total: {{ $totalPeriods }}</span>
+                                <span class="text-green-600 ml-2">Created: {{ $log->created_periods ?? 0 }}</span>
+                                <span class="text-orange-600 ml-2">Updated: {{ $log->updated_periods ?? 0 }}</span>
+                                
                                 @if($log->error_count > 0)
-                                <span class="text-red-600">Errors: {{ $log->error_count ?? 0 }}</span>
+                                <div class="font-medium text-red-700 mt-2 mb-1">❌ Errors:</div>
+                                <span class="text-red-600 ml-2">{{ $log->error_count ?? 0 }}</span>
                                 @endif
                             </div>
                         </td>
@@ -361,31 +371,51 @@ function showLogDetails(logId) {
                     <p class="text-sm text-gray-900">${data.message || 'No message'}</p>
                 </div>
                 
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                    <h4 class="font-medium text-blue-800 mb-3">🗂️ Tours Summary</h4>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Total Records</label>
+                            <p class="text-lg font-semibold text-gray-900">${data.records_processed || 0}</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Created Tours</label>
+                            <p class="text-lg font-semibold text-green-600">${data.records_created || 0}</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Duplicated Tours</label>
+                            <p class="text-lg font-semibold text-purple-600">${data.records_duplicated || 0}</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Errors</label>
+                            <p class="text-lg font-semibold text-red-600">${data.records_failed || 0}</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+                    <h4 class="font-medium text-green-800 mb-3">📅 Periods Summary</h4>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Total Periods</label>
+                            <p class="text-2xl font-bold text-blue-600">${(data.created_periods || 0) + (data.updated_periods || 0)}</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Created</label>
+                            <p class="text-lg font-semibold text-green-600">${data.created_periods || 0}</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Updated</label>
+                            <p class="text-lg font-semibold text-orange-600">${data.updated_periods || 0}</p>
+                        </div>
+                    </div>
+                </div>
+                
                 <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">Total Records</label>
-                        <p class="text-sm text-gray-900">${data.records_processed || 0}</p>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">Created Tours</label>
-                        <p class="text-sm text-gray-900">${data.records_created || 0}</p>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">Updated Tours</label>
-                        <p class="text-sm text-gray-900">${data.records_updated || 0}</p>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">Duplicated Tours</label>
-                        <p class="text-sm text-gray-900">${data.records_duplicated || 0}</p>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700">Errors</label>
-                        <p class="text-sm text-gray-900">${data.records_failed || 0}</p>
-                    </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700">Sync Type</label>
                         <p class="text-sm text-gray-900">
-                            ${data.sync_type === 'manual' ? '👤 Manual' : (data.sync_type === 'auto' ? '⏰ Scheduled' : '❓ Unknown')}
+                            ${data.sync_type === 'manual' ? '👤 Manual' : (data.sync_type === 'scheduled' ? '⏰ Scheduled' : '👤 Manual Sync')}
                         </p>
                     </div>
                 </div>

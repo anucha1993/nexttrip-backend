@@ -11,6 +11,8 @@ Route::post('webpanel/login', [Webpanel\AuthController::class, 'postLogin']);
 Route::get('webpanel/logout', [Webpanel\AuthController::class, 'logOut']);
 Route::get('member/logout', [Webpanel\AuthController::class, 'logOut']);
 
+
+
 Route::group(['middleware' => ['Webpanel']], function () {
 
     Route::prefix('webpanel')->group(function () {

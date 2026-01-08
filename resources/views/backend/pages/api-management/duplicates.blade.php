@@ -73,12 +73,12 @@
                         </div>
                     </div>
                 </div>
-                <div class="intro-y col-span-12 md:col-span-6 lg:col-span-3">
+                {{-- <div class="intro-y col-span-12 md:col-span-6 lg:col-span-3">
                     <div class="box p-5">
                         <div class="flex">
                             <div class="mr-3 text-center">
                                 <div class="text-base text-slate-500">Pending Review</div>
-                                <div class="text-lg font-medium">{{ $duplicates->where('status', 'pending')->count() }}</div>
+                                <div class="text-lg font-medium">{{ $duplicates->filter(function($d) { return $d->status == 'pending' || $d->status === null; })->count() }}</div>
                             </div>
                             <div class="ml-auto">
                                 <div class="w-8 h-8 bg-pending/10 flex items-center justify-center rounded-full">
@@ -87,174 +87,103 @@
                             </div>
                         </div>
                     </div>
-                </div>
+                </div> --}}
             </div>
 
             <!-- Duplicates List -->
             <div class="intro-y box mt-5">
                 <div class="p-5 border-b border-slate-200/60">
-                    <h3 class="font-medium text-base">Duplicate Tours Found</h3>
+                    <h3 class="font-medium text-base">Duplicate Tours Found (Showing up to 300 records)</h3>
                     <div class="text-slate-500 mt-1">Review and manage duplicate tour entries</div>
                 </div>
                 
-                <div class="p-5">
-                    @forelse($duplicates as $duplicate)
-                        <div class="mb-8 last:mb-0">
-                            <!-- Duplicate Tour (New from API) -->
-                            <div class="duplicate-item border rounded-lg p-4 mb-4">
-                                <div class="flex justify-between items-start mb-3">
-                                    <div class="flex-1">
-                                        <h4 class="font-semibold text-warning">
-                                            <i data-lucide="alert-triangle" class="w-4 h-4 inline mr-2"></i>
-                                            New Tour (From API)
-                                        </h4>
-                                        <div class="text-sm text-slate-600 mt-1">
-                                            Detected: {{ $duplicate->created_at->format('M d, Y H:i') }}
-                                            @if($duplicate->syncLog && $duplicate->syncLog->sync_type)
-                                                <span class="ml-2 px-2 py-1 rounded text-xs {{ $duplicate->syncLog->sync_type === 'manual' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700' }}">
-                                                    {{ $duplicate->syncLog->sync_type === 'manual' ? '👤 Manual Sync' : '⏰ Scheduled Sync' }}
-                                                </span>
-                                            @elseif($duplicate->sync_log_id)
-                                                <span class="ml-2 px-2 py-1 rounded text-xs bg-gray-100 text-gray-700">
-                                                    🔄 Unknown Sync
-                                                </span>
-                                            @endif
-                                        </div>
-                                    </div>
-                                    <div class="flex space-x-2">
-                                        <span class="px-2 py-1 bg-warning/20 text-warning rounded text-xs">
-                                            {{ ucfirst($duplicate->status) }}
-                                        </span>
-                                        <span class="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs">
-                                            Similarity: {{ $duplicate->similarity_score ?? 'N/A' }}%
-                                        </span>
-                                    </div>
-                                </div>
-                                
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                    <div>
-                                        <div class="text-xs text-slate-500 uppercase tracking-wide">Tour Name</div>
-                                        <div class="font-medium">{{ $duplicate->duplicate_data['name'] ?? 'N/A' }}</div>
-                                    </div>
-                                    <div>
-                                        <div class="text-xs text-slate-500 uppercase tracking-wide">API ID</div>
-                                        <div class="font-medium">{{ $duplicate->duplicate_data['api_id'] ?? 'N/A' }}</div>
-                                    </div>
-                                    <div>
-                                        <div class="text-xs text-slate-500 uppercase tracking-wide">Country</div>
-                                        <div class="font-medium">{{ $duplicate->duplicate_data['country_name'] ?? 'N/A' }}</div>
-                                    </div>
-                                </div>
-                                
-                                @if($duplicate->duplicate_data['description'])
-                                <div class="mt-3">
-                                    <div class="text-xs text-slate-500 uppercase tracking-wide">Description</div>
-                                    <div class="text-sm mt-1">{{ Str::limit($duplicate->duplicate_data['description'], 200) }}</div>
-                                </div>
-                                @endif
-                            </div>
-
-                            <!-- Existing Tour (In Database) -->
-                            @if($duplicate->existingTour)
-                            <div class="existing-tour border rounded-lg p-4 mb-4">
-                                <div class="flex justify-between items-start mb-3">
-                                    <div class="flex-1">
-                                        <h4 class="font-semibold text-success">
-                                            <i data-lucide="database" class="w-4 h-4 inline mr-2"></i>
-                                            Existing Tour (In Database)
-                                        </h4>
-                                        <div class="text-sm text-slate-600 mt-1">
-                                            Created: {{ $duplicate->existingTour->created_at->format('M d, Y H:i') }}
-                                        </div>
-                                    </div>
-                                    <div class="flex space-x-2">
-                                        <a href="{{ route('tour.edit', $duplicate->existingTour->id) }}" target="_blank" 
-                                           class="px-2 py-1 bg-primary/20 text-primary rounded text-xs hover:bg-primary/30">
-                                            View Tour
-                                        </a>
-                                    </div>
-                                </div>
-                                
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                    <div>
-                                        <div class="text-xs text-slate-500 uppercase tracking-wide">Tour Name</div>
-                                        <div class="font-medium">{{ $duplicate->existingTour->name ?? 'N/A' }}</div>
-                                    </div>
-                                    <div>
-                                        <div class="text-xs text-slate-500 uppercase tracking-wide">Tour Code</div>
-                                        <div class="font-medium">{{ $duplicate->existingTour->code1 ?? 'N/A' }}</div>
-                                    </div>
-                                    <div>
-                                        <div class="text-xs text-slate-500 uppercase tracking-wide">Country</div>
-                                        <div class="font-medium">{{ $duplicate->existingTour->country_name ?? 'N/A' }}</div>
-                                    </div>
-                                </div>
-                                
-                                @if($duplicate->existingTour->description)
-                                <div class="mt-3">
-                                    <div class="text-xs text-slate-500 uppercase tracking-wide">Description</div>
-                                    <div class="text-sm mt-1">{{ Str::limit($duplicate->existingTour->description, 200) }}</div>
-                                </div>
-                                @endif
-                            </div>
-                            @endif
-
-                            <!-- Matching Fields -->
-                            @if($duplicate->matching_fields)
-                            <div class="border border-slate-200 rounded-lg p-4 mb-4">
-                                <h5 class="font-medium mb-3">
-                                    <i data-lucide="git-merge" class="w-4 h-4 inline mr-2"></i>
-                                    Matching Fields
-                                </h5>
-                                <div class="flex flex-wrap gap-2">
-                                    @foreach($duplicate->matching_fields as $field)
-                                        <span class="px-2 py-1 bg-slate-100 text-slate-700 rounded text-xs">
-                                            {{ ucwords(str_replace('_', ' ', $field)) }}
-                                        </span>
-                                    @endforeach
-                                </div>
-                            </div>
-                            @endif
-
-                            <!-- Action Buttons -->
-                            @if($duplicate->status == 'pending')
-                            <div class="flex justify-end space-x-3 pt-3 border-t">
-                                <button onclick="mergeDuplicate({{ $duplicate->id }})" 
-                                        class="btn btn-success btn-sm">
-                                    <i data-lucide="git-merge" class="w-4 h-4 mr-2"></i>
-                                    Merge & Update
-                                </button>
-                                <button onclick="ignoreDuplicate({{ $duplicate->id }})" 
-                                        class="btn btn-secondary btn-sm">
-                                    <i data-lucide="x-circle" class="w-4 h-4 mr-2"></i>
-                                    Ignore
-                                </button>
-                                <button onclick="showComparison({{ $duplicate->id }})" 
-                                        class="btn btn-outline-secondary btn-sm">
-                                    <i data-lucide="eye" class="w-4 h-4 mr-2"></i>
-                                    Compare Details
-                                </button>
-                            </div>
-                            @else
-                            <div class="flex justify-end pt-3 border-t">
-                                <span class="px-3 py-1 bg-slate-100 text-slate-600 rounded text-sm">
-                                    Status: {{ ucfirst($duplicate->status) }}
-                                    @if($duplicate->resolved_at)
-                                        - {{ $duplicate->resolved_at->format('M d, Y H:i') }}
+                <div class="overflow-x-auto">
+                    <table class="table table-report -mt-2">
+                        <thead>
+                            <tr>
+                                <th class="whitespace-nowrap">Detected</th>
+                                <th class="whitespace-nowrap">API ID</th>
+                                <th class="whitespace-nowrap">Existing Tour</th>
+                                <th class="whitespace-nowrap">Tour Code</th>
+                                <th class="whitespace-nowrap">Sync Type</th>
+                                {{-- <th class="text-center whitespace-nowrap">Actions</th> --}}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @forelse($duplicates as $duplicate)
+                            <tr class="intro-x">
+                                <td class="whitespace-nowrap">
+                                    <div class="text-xs text-slate-500">{{ $duplicate->created_at->format('M d, Y') }}</div>
+                                    <div class="text-xs text-slate-400">{{ $duplicate->created_at->format('H:i') }}</div>
+                                </td>
+                                <td class="whitespace-nowrap">
+                                    <div class="font-medium">{{ $duplicate->api_data['api_id'] ?? ($duplicate->api_data['tour_id'] ?? ($duplicate->api_id ?? 'N/A')) }}</div>
+                                </td>
+                               
+                                <td>
+                                    @if($duplicate->existingTour)
+                                    <div class="font-medium">{{ Str::limit($duplicate->existingTour->name ?? 'N/A', 50) }}</div>
+                                    <div class="text-xs text-slate-500 mt-1">ID: {{ $duplicate->existingTour->id }}</div>
+                                    @else
+                                    <span class="text-slate-400">-</span>
                                     @endif
-                                </span>
-                            </div>
-                            @endif
-                        </div>
-                    @empty
-                        <div class="text-center py-12">
-                            <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                <i data-lucide="check-circle" class="w-10 h-10 text-slate-400"></i>
-                            </div>
-                            <h3 class="font-medium text-slate-600 mb-2">No Duplicates Found</h3>
-                            <p class="text-slate-500">All tours from this API provider are unique.</p>
-                        </div>
-                    @endforelse
+                                </td>
+                                <td class="whitespace-nowrap">
+                                    @if($duplicate->existingTour)
+                                    <span class="text-slate-600">{{ $duplicate->existingTour->code1 ?? 'N/A' }}</span>
+                                    @else
+                                    <span class="text-slate-400">-</span>
+                                    @endif
+                                </td>
+                                <td class="whitespace-nowrap">
+                                    @if($duplicate->syncLog && $duplicate->syncLog->sync_type)
+                                        <span class="px-2 py-1 rounded text-xs {{ $duplicate->syncLog->sync_type === 'manual' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700' }}">
+                                            {{ $duplicate->syncLog->sync_type === 'manual' ? '👤 Manual' : '⏰ Scheduled' }}
+                                        </span>
+                                    @else
+                                        <span class="text-slate-400 text-xs">Manual Sync</span>
+                                    @endif
+                                </td>
+                              
+                                {{-- <td class="table-report__action w-56">
+                                    <div class="flex justify-center items-center space-x-2">
+                                        @if($duplicate->existingTour)
+                                        <a href="/webpanel/tour/edit/{{ $duplicate->existingTour->id }}" 
+                                           target="_blank"
+                                           class="btn btn-sm btn-outline-secondary w-20" 
+                                           title="View Tour">
+                                            <i data-lucide="eye" class="w-4 h-4"></i>
+                                        </a>
+                                        @endif
+                                        
+                                        @if(!$duplicate->status || $duplicate->status == 'pending')
+                                        <button onclick="mergeDuplicate({{ $duplicate->id }})" 
+                                                class="btn btn-sm btn-success w-20"
+                                                title="Merge">
+                                            <i data-lucide="git-merge" class="w-4 h-4"></i>
+                                        </button>
+                                        <button onclick="ignoreDuplicate({{ $duplicate->id }})" 
+                                                class="btn btn-sm btn-secondary w-20"
+                                                title="Ignore">
+                                            <i data-lucide="x-circle" class="w-4 h-4"></i>
+                                        </button>
+                                        @endif
+                                    </div>
+                                </td> --}}
+                            </tr>
+                            @empty
+                            <tr>
+                                <td colspan="8" class="text-center py-12">
+                                    <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                        <i data-lucide="check-circle" class="w-10 h-10 text-slate-400"></i>
+                                    </div>
+                                    <h3 class="font-medium text-slate-600 mb-2">No Duplicates Found</h3>
+                                    <p class="text-slate-500">All tours from this API provider are unique.</p>
+                                </td>
+                            </tr>
+                            @endforelse
+                        </tbody>
+                    </table>
                 </div>
 
                 <!-- Pagination -->

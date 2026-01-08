@@ -2502,6 +2502,9 @@ class FrontController extends Controller
         if($request->tag){
             $tag_search = $request->tag;
             $tag_data = TagContentModel::find($request->tag);
+            if (!$tag_data) {
+                abort(404, "ไม่พบ Tag: id = '{$request->tag}'");
+            }
             $tag_name = $tag_data->tag;
         }
         //dd($request);
@@ -2834,6 +2837,11 @@ class FrontController extends Controller
     public function tour_detail($detail_slug)
     {
         $dat = TourModel::where('slug',$detail_slug)->whereNull('deleted_at')->first();
+        
+        if (!$dat) {
+            abort(404, "ไม่พบทัวร์: slug = '{$detail_slug}'");
+        }
+        
         $period = TourPeriodModel::where(['tour_id'=>$dat->id,'status_display'=>'on'])->whereDate('start_date','>=',now())->whereNull('deleted_at')->get();
         $min = $period->min('start_date');
         $max = $period->max('start_date');
@@ -2877,14 +2885,17 @@ class FrontController extends Controller
 
         $dat = TourModel::where('slug',$detail_slug)->whereNull('deleted_at')->first();
 		
-		  if (!$dat) {
-        // อาจจะ redirect กลับหรือแสดง error page
-        return redirect()->back()->with('error', 'ไม่พบข้อมูลทัวร์นี้');
-    }
+        if (!$dat) {
+            abort(404, "ไม่พบทัวร์: slug = '{$detail_slug}'");
+        }
 
         $periods = TourPeriodModel::where(['tour_id'=>$dat->id,'status_display'=>'on','status_period'=>1])->whereDate('start_date','>=',now())->whereNull('deleted_at')->orderby('start_date','asc')->get();
 
         $period = TourPeriodModel::find($id);
+        
+        if (!$period) {
+            abort(404, "ไม่พบ Period: id = '{$id}' สำหรับทัวร์ '{$detail_slug}'");
+        }
 
         $sales = User::where(['role'=>2,'status'=>'active'])->get();
         

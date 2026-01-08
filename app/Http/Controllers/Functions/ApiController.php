@@ -2474,7 +2474,7 @@ class ApiController extends Controller
                                     }
             
                                     $maxCheck = max($max);
-                                    if($maxCheck > 0 && $maxCheck >= 30){
+                                    if($maxCheck > 0 && $maxCheck >= 30){ 
                                         TourModel::where(['id'=>$data->id, 'api_type'=>'itravel'])->update(['promotion1'=>'Y','promotion2'=>'N']); // เป็นโปรไฟไหม้
                                     }elseif($maxCheck > 0 && $maxCheck < 30){
                                         TourModel::where(['id'=>$data->id, 'api_type'=>'itravel'])->update(['promotion1'=>'N','promotion2'=>'Y']); // เป็นโปรธรรมดา

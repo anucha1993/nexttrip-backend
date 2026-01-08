@@ -1,5 +1,41 @@
                
     // holiday_date = Array.from([holiday_date], (x) => x );
+    window.ASSET_URL = "{{ env('ASSET_URL') }}";
+    
+    // ✅ ดึงข้อมูลจาก https://nexttripholidays.com/script-filter.js ด้วย dynamic script loading
+    var tour = [];
+    var period = [];
+    var country = [];
+    var province = [];
+    var price = [];
+    var airline = [];
+    var rating = [];
+    var day_num = [];
+    var month = [];
+    var holiday = [];
+    var tour_type = [];
+    var holiday_date = {};
+    var city = [];
+    var amupur = [];
+    var special_price = [];
+    var promotion = [];
+    
+    // Load external script-filter.js dynamically
+    var script = document.createElement('script');
+    script.src = 'https://nexttripholidays.com/script-filter.js?t=' + new Date().getTime();
+    script.onload = function() {
+        console.log('✅ Data loaded from https://nexttripholidays.com/script-filter.js');
+        console.log('Tours:', tour.length, 'Periods:', period.length);
+        // Delay starter to ensure data is loaded
+        setTimeout(function() {
+            starter();
+        }, 500);
+    };
+    script.onerror = function() {
+        console.error('❌ Error loading https://nexttripholidays.com/script-filter.js');
+    };
+    document.head.appendChild(script);
+    
     var menu_country = new Array();
         var menu_price = new Array();
         var menu_airline = new Array();
@@ -58,7 +94,7 @@
         var months = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
         var month_number = ['01','02','03','04','05','06','07','08','09','10','11','12'];
         var min_date = (new Date().getMonth()+1)+'/'+new Date().getDate()+'/'+new Date().getFullYear()*1;
-        starter();
+        // ✅ starter() จะเรียกหลังจากโหลด external script
         $('#hide_date_select').hide();
         $('#hide_date_select_mb').hide(); 
        
@@ -94,7 +130,9 @@
                     document.getElementById('show_code_mb').innerHTML = "<li onclick='DeletedCode()'><label class='check-container'>"+code_id+" <i class='fa fa-times-circle' aria-hidden='true'></i></label></li>";
                     document.getElementById('show_code_all').innerHTML = "<li onclick='DeletedCode()'><label class='check-container'>"+code_id+" <i class='fa fa-times-circle' aria-hidden='true'></i></label></li>";
                 }
-            }else if(code_id){
+                // เรียก filter_tour ทันที
+                await filter_tour();
+            }else if(code_id && code_id != 0){
                 type_data.tour_code.push(code_id);
                 if(isWin || isMac){
                     document.getElementById('show_code').innerHTML = "<li onclick='DeletedCode()'><label class='check-container'>"+code_id+" <i class='fa fa-times-circle' aria-hidden='true'></i></label></li>";
@@ -103,6 +141,8 @@
                     document.getElementById('show_code_mb').innerHTML = "<li onclick='DeletedCode()'><label class='check-container'>"+code_id+" <i class='fa fa-times-circle' aria-hidden='true'></i></label></li>";
                     document.getElementById('show_code_all').innerHTML = "<li onclick='DeletedCode()'><label class='check-container'>"+code_id+" <i class='fa fa-times-circle' aria-hidden='true'></i></label></li>";
                 }
+                // เรียก filter_tour ทันที
+                await filter_tour();
             }
             else if(keyword_search){
                 type_data.travel_search.push(keyword_search);
@@ -569,7 +609,7 @@
             for(let y in data){
                 text = text+'<li><label class="check-container">'
                 if(data[y].img){
-                    text = text+'<img src="/'+data[y].img+'" alt=""></img>';
+                    text = text+'<img src="https://nexttripholidays.com/'+data[y].img+'" alt=""></img>';
                 }
                 text = text+' '+data[y].name;
                 text = text+'<input type="checkbox" id="airline'+data[y].id+'" onclick="put_filter('+data[y].id+',`airline`)" value="'+data[y].id+'">';
@@ -581,7 +621,7 @@
                 for(let y in data){
                     text = text+'<li><label class="check-container">';
                     if(data[y].img){
-                        text = text+'<img src="/'+data[y].img+'" alt=""></img>';
+                        text = text+'<img src="https://nexttripholidays.com/'+data[y].img+'" alt=""></img>';
                     }
                     text = text+' '+data[y].name;
                     text = text+'<input type="checkbox"  id="airline'+data[y].id+'" onclick="put_filter('+data[y].id+',`airline`)" value="'+data[y].id+'">';
@@ -931,7 +971,7 @@
                     for(let y in data){
                         text = text+'<li><label class="check-container">'
                         if(data[y].img){
-                            text = text+'<img src="/'+data[y].img+'" alt=""></img>';
+                            text = text+'<img src="https://nexttripholidays.com/'+data[y].img+'" alt=""></img>';
                         }
                         text = text+' '+data[y].name;
                         text = text+'<input type="checkbox" id="airline'+data[y].id+'" onclick="put_filter('+data[y].id+',`airline`)" value="'+data[y].id+'">';
@@ -943,7 +983,7 @@
                         for(let y in data){
                             text = text+'<li><label class="check-container">';
                             if(data[y].img){
-                                text = text+'<img src="/'+data[y].img+'" alt=""></img>';
+                                text = text+'<img src="https://nexttripholidays.com/'+data[y].img+'" alt=""></img>';
                             }
                             text = text+' '+data[y].name;
                             text = text+'<input type="checkbox"  id="airline'+data[y].id+'" onclick="put_filter('+data[y].id+',`airline`)" value="'+data[y].id+'">';
@@ -972,7 +1012,7 @@
                 for(let y in data){
                     text = text+'<li><label class="check-container">'
                     if(data[y].img){
-                        text = text+'<img src="/'+data[y].img+'" alt=""></img>';
+                        text = text+'<img src="https://nexttripholidays.com/'+data[y].img+'" alt=""></img>';
                     }
                     text = text+' '+data[y].name;
                     text = text+'<input type="checkbox" id="airline'+data[y].id+'" onclick="put_filter('+data[y].id+',`airline`)" value="'+data[y].id+'">';
@@ -984,7 +1024,7 @@
                     for(let y in data){
                         text = text+'<li><label class="check-container">';
                         if(data[y].img){
-                            text = text+'<img src="/'+data[y].img+'" alt=""></img>';
+                            text = text+'<img src="https://nexttripholidays.com/'+data[y].img+'" alt=""></img>';
                         }
                         text = text+' '+data[y].name;
                         text = text+'<input type="checkbox"  id="airline'+data[y].id+'" onclick="put_filter('+data[y].id+',`airline`)" value="'+data[y].id+'">';
@@ -1150,7 +1190,10 @@
                 }if(type_data.tour_code.length){
                     // let data = await tour.filter(x => type_data.tour_code.includes(x.id));
                     // data_tour = await data_tour.concat(data);
+                    console.log('Filtering by tour_code:', type_data.tour_code);
+                    console.log('Data tour before filter:', data_tour.length);
                     data_tour = await data_tour.filter(x => type_data.tour_code.includes(x.id));
+                    console.log('Data tour after filter:', data_tour.length);
                     check_fill = false;
                 }
                 console.log(type_data,'type_data11111',tour_code)
@@ -1246,25 +1289,23 @@
             
           }
           var count_pagin = 1;
+
           async function show_tour(x){
-            // console.log(count_pagin,'page',Object.keys(main_tour),'main_tour.length')
+           
             if(x == undefined){
                 count_pagin++;
             }
            
-            // $('#page'+paginat_act).removeClass('pagination-active');
-            // $('#page'+(x+1)).addClass('pagination-active');
-            // paginat_act = x;
-            // await count_paginate(paginat_act);
             var tour_show = main_tour[count_pagin-1];
-            // console.log(typeof tour_show === 'object' && tour_show.length >= 15 ,'check data',main_tour.length)
             if(tour_show && (typeof tour_show === 'string' || (typeof tour_show === 'object' && tour_show.length >= 15)) && main_tour.length > 1){
                 $('#btn-showmore').removeClass('d-none');
             }else{
                 $('#btn-showmore').addClass('d-none');
             }
             var text = '';
+            
             var text_grid = '';
+            
             // console.log(tour_show,'show',count_pagin,'count_pagin')
             for(let y in tour_show){
                 var order_period = Object.keys(tour_show[y].period).sort((a, b) => a - b);
@@ -1272,18 +1313,18 @@
                 // if(y == 0){
                     //console.log(tour_show[y].tour,'data-pe')
                 // }
-                text +=            "<div class='boxwhiteshd'>";
+                text +=            "<div class='boxwhiteshd '>";
                 text +=                "<div class='toursmainshowGroup  hoverstyle'>";
                 text +=                    "<div class='row'>";
                 text +=                        "<div class='col-lg-12 col-xl-3 pe-xl-0'>";
                 text +=                            "<div class='covertourimg'>";
                 text +=                                "<figure>";
-                text +=                                    "<a href='/tour/"+tour_show[y].tour.slug+"' target='_blank'><img src='/"+tour_show[y].tour.image+"' alt=''></a>";
+                text +=                                    "<a href='https://nexttripholiday.com/tour/"+tour_show[y].tour.slug+"' target='_blank'><img src='https://nexttripholidays.com/"+tour_show[y].tour.image+"' alt=''></a>";
                 text +=                                "</figure>";
                 text +=                                "<div class='d-block d-sm-block d-md-block d-lg-none d-xl-none'>";
-                text +=                                    "<a href='/tour/"+tour_show[y].tour.slug+"' target='_blank' class='tagicbest'>";
+                text +=                                    "<a href='https://nexttripholiday.com/tour/"+tour_show[y].tour.slug+"' target='_blank' class='tagicbest'>";
                                                             if(tour_show[y].tour_type){
-                text +=                                          "<img src='/"+tour_show[y].tour_type.image+"' class='img-fluid' alt=''>";
+                text +=                                          "<img src='https://nexttripholidays.com/"+tour_show[y].tour_type.image+"' class='img-fluid' alt=''>";
                                                             }
                 text +=                                     "</a>";
                 text +=                                "</div>";
@@ -1298,19 +1339,23 @@
                 text +=                                     "<div class='soldop'>";
                 text +=                                         "<span class='bigSold'>SOLD OUT </span> <br>";
                 text +=                                         "<span class='textsold'> ว้า! หมดแล้ว คุณตัดสินใจช้าไป</span> <br>";
-                text +=                                         "<a href='/tour/"+tour_show[y].tour.slug+"' target='_blank' class='btn btn-second mt-3'><i class='fi fi-rr-search'></i> หาโปรแกรมทัวร์ใกล้เคียง</a>";
+                text +=                                         "<a href='https://nexttripholiday.com/tour/"+tour_show[y].tour.slug+"' target='_blank' class='btn btn-second mt-3'><i class='fi fi-rr-search'></i> หาโปรแกรมทัวร์ใกล้เคียง</a>";
                 text +=                                     "</div>";
                 text +=                                 "</div>";
                                                     }
-                text +=                             "<div class='priceonpic'>";
-                                                    if(tour_show[y].tour.special_price > 0){
-                                                        var total_price = tour_show[y].tour.price - tour_show[y].tour.special_price ;
-                text +=                                    "<span class='originalprice'>ปกติ "+Intl.NumberFormat('th-TH', {currency:'THB',}).format(tour_show[y].tour.price)+" </span><br>";
-                text +=                                    "เริ่ม<span class='saleprice'> "+Intl.NumberFormat('th-TH', {currency:'THB',}).format(total_price)+" บาท</span>";
-                                                    }else{
-                text +=                                    "<span class='saleprice'> "+Intl.NumberFormat('th-TH', {currency:'THB',}).format(tour_show[y].tour.price)+" บาท</span>";
-                                                    }
-                text +=                             "</div>";
+
+
+                  text += "<div class='priceonpic' style='background: #fffbe7; border-radius: 10px; padding: 10px; box-shadow: 0 2px 8px rgba(255, 193, 7, 0.15); text-align: center;'>";
+                    if (tour_show[y].tour.special_price > 0) {
+                        var total_price = tour_show[y].tour.price - tour_show[y].tour.special_price;
+                        text += "<span class='originalprice' style='color: #b0b0b0; text-decoration: line-through; font-size: 1rem;'>ปกติ " + Intl.NumberFormat('th-TH', { currency: 'THB' }).format(tour_show[y].tour.price) + " </span><br>";
+                        text += "เริ่ม<span class='saleprice' style='color: #e53935; font-weight: bold; font-size: 1.5rem; margin-left: 5px;'> " + Intl.NumberFormat('th-TH', { currency: 'THB' }).format(total_price) + " บาท</span>";
+                    } else {
+                        text += "<span class='saleprice' style='color: #f57c00; font-weight: bold; font-size: 1.5rem;'>" + Intl.NumberFormat('th-TH', { currency: 'THB' }).format(tour_show[y].tour.price) + " บาท</span>";
+                    }
+                  text += "</div>";
+
+
                 text +=                             "<div class='addwishlist'>";
                 text +=                                  "<a href='javascript:void(0);' class='wishlist' data-tour-id='"+tour_show[y].tour.id+"'><i class='bi bi-heart-fill' id='likeButton' onclick='likedTour("+tour_show[y].tour.id+")'></i></a>";
                 text +=                             "</div>";
@@ -1324,16 +1369,25 @@
                 text +=                                         tour_show[y].country[c].country_name_th?tour_show[y].country[c].country_name_th:tour_show[y].country[c].country_name_en;
                                                             }
                 text +=                                 "</a></i>";
+
+
+                
                                                         }
-                text +=                                "<li>รหัสทัวร์ : <span class='bluetext'>";
-                                                            if(tour_show[y].tour.code1_check){ 
-                text +=                                         tour_show[y].tour.code1;
-                                                            }else{ 
-                text +=                                         tour_show[y].tour.code;
-                                                            }
-                text +=                                     "</span>";
-                text +=                                "</li>";
-                text +=                                "<li class='rating'>โรงแรม"; 
+                  text += "<li class='code'> &nbsp;รหัสทัวร์ : <span class='bluetext py-2'> &nbsp;";
+                  let codeToShow = '';
+                  if (tour_show[y].tour.code1_check) {
+                      codeToShow = tour_show[y].tour.code1;
+                  } else {
+                      codeToShow = tour_show[y].tour.code;
+                  }
+                  // แสดง 6 ตัวสุดท้าย
+                  if (codeToShow && codeToShow.length > 6) {
+                      codeToShow = codeToShow.slice(-6);
+                  }
+                  text += codeToShow;
+                  text += "</span>";
+                  text += "</li>";
+                text +=                                "<li class='rating py-2'>  &nbsp;&nbsp;โรงแรม &nbsp;"; 
                                                          if(tour_show[y].tour.rating > 0){
                 text +=                                         "<a href='javascript:void(0);' onclick='document.getElementById(`rating"+tour_show[y].tour.rating+"`).click()'>";
                                                                 for($i=1; $i <= tour_show[y].tour.rating; $i++){
@@ -1345,38 +1399,61 @@
                                                         }  
                 text +=                                "</li>";
                                                         if(tour_show[y].airline){
-                text +=                                  "<li>สายการบิน <a href='javascript:void(0);' onclick='document.getElementById(`airline"+tour_show[y].airline.id+"`).click()' >";
+                text +=                                  "<li>  &nbsp;&nbsp;สายการบิน &nbsp; <a href='javascript:void(0);' onclick='document.getElementById(`airline"+tour_show[y].airline.id+"`).click()' >";
                                                             if(tour_show[y].airline.image){
-                text +=                                        "<img src='/"+tour_show[y].airline.image+"' alt=''></a></li>";
+                text +=                                        "<img <img src='https://nexttripholidays.com/"+tour_show[y].airline.image+"' alt=''></a></li>";
                                                             }                                      
                 text +=                                  "</li>";
                                                         }
                 text +=                                "<li>";
                 text +=                                    "<div  class='d-none d-sm-none d-md-none d-lg-block d-xl-block'>";
                                                             if(tour_show[y].tour_type){
-                text +=                                         "<a href='javascript:void(0);' class='tagicbest' onclick='OrderByType("+tour_show[y].tour_type.id+")'><img src='/"+tour_show[y].tour_type.image+"' class='img-fluid' alt=''></a>";
+                text +=                                         "<a href='javascript:void(0);' class='tagicbest' onclick='OrderByType("+tour_show[y].tour_type.id+")'><img <img src='https://nexttripholidays.com/"+tour_show[y].tour_type.image+"' class='img-fluid' alt=''></a>";
                                                             }
-                text +=                                    "</div>";
+                text +=                                    " &nbsp;</div>";
                 text +=                                "</li>";
                                                         if(Object.keys(tour_show[y].period).length > 0){
                                                                 for(let dp in tour_show[y].period){
                                                                     var day_num = tour_show[y].period[dp][0].day;
                                                                 }
-                text +=                                 "<li class='bgor'>ระยะเวลา <a href='javascript:void(0);' onclick='document.getElementById(`day"+day_num+"`).click()'>"+tour_show[y].tour.num_day+"</a></li>";
+                text +=                                 "<li class='bgor'> &nbsp;ระยะเวลา &nbsp;<a href='javascript:void(0);' style='color:#f15a22;' onclick='document.getElementById(`day"+day_num+"`).click()'>"+tour_show[y].tour.num_day+"</a></li>";
                                                         }
-                text +=                           " </div>";
-                text +=                            "<div class='nameTop'>";
-                text +=                                "<h3> <a href='/tour/"+tour_show[y].tour.slug+"' target='_blank' >"+tour_show[y].tour.name+"</a></h3>";
+                text +=                           "  &nbsp;</div>";
+                text +=                            "<div class='nameTop mt-2'>";
+                text +=                                "<h3> <a href='/tour/"+tour_show[y].tour.slug+"' target='_blank'  style='color:#f15a22;'>&nbsp"+tour_show[y].tour.name+"</a></h3>";
                 text +=                            "</div>";
-                text +=                            "<div class='pricegroup text-end'>";
-                                                    if(tour_show[y].tour.special_price > 0){
-                                                        var total_price = tour_show[y].tour.price - tour_show[y].tour.special_price; 
-                text +=                                     "<span class='originalprice'>ปกติ "+Intl.NumberFormat('th-TH', {currency:'THB',}).format(tour_show[y].tour.price)+" </span><br>";
-                text +=                                     "เริ่ม<span class='saleprice'> "+Intl.NumberFormat('th-TH', {currency:'THB',}).format(total_price)+" บาท</span>";
-                                                    }else{
-                text +=                                     "<span class='saleprice'> "+Intl.NumberFormat('th-TH', {currency:'THB',}).format(tour_show[y].tour.price)+" บาท</span>";
-                                                    }   
-                text +=                            "</div>";
+
+text += "<div class='pricegroup text-end'>";
+
+if (tour_show[y].tour.special_price > 0) {
+  const saveAmt   = tour_show[y].tour.special_price;
+  const finalAmt  = tour_show[y].tour.price - saveAmt;
+
+  text += `
+    <div class="price-hero  mb-2">
+      <div class="price-save">ประหยัด ${Intl.NumberFormat('th-TH').format(saveAmt)} บาท</div>
+      <div class="price-origin">ปกติ ${Intl.NumberFormat('th-TH').format(tour_show[y].tour.price)} บาท</div>
+      <div class="price-main">
+        <span class="price-prefix">เริ่ม</span>
+        <span class="price-number">${Intl.NumberFormat('th-TH').format(finalAmt)}</span>
+        <span class="price-unit">บาท</span>
+      </div>
+    </div>`;
+} else {
+  text += `
+    <div class="price-hero ">
+      <div class="price-main">
+        <span class="price-prefix">เริ่ม</span>
+        <span class="price-number">${Intl.NumberFormat('th-TH').format(tour_show[y].tour.price)}</span>
+        <span class="price-unit">บาท</span>
+      </div>
+    </div>`;
+}
+
+text += "</div>";
+
+                
+                
                                                     if(tour_show[y].tour.description){
                 text +=                                 "<div class='highlighttag'>";
                 text +=                                     "<span><i class='fi fi-rr-tags'></i> </span>"+tour_show[y].tour.description;
@@ -1445,6 +1522,9 @@
                 text +=                            "</div>";
                 text +=                        "</div>";
                 text +=                    "</div>";
+                  text +=                    "<hr>";
+
+
                                  
                                     if(Object.keys(tour_show[y].period).length > 0){
                 text +=                    "<div class='periodtime'>";
@@ -1454,8 +1534,8 @@
                 text +=                                    "<div class='listperiod_moredetails'>";
                                                             for(let gp in order_period){
                                                                 var month_datas = order_period[gp].split('202');
-                text +=                                        "<div class='tagmonth'>";
-                text +=                                            "<span class='month'>"+month_period[Number(month_datas[0])]+"</span>";
+                text +=                                        "<div class='tagmonth py-2'>";
+                text +=                                            "<span class='month' style='padding;'>"+month_period[Number(month_datas[0])]+"</span>";
                 text +=                                       "</div>";
                 text +=                                       "<div class='splgroup'>";
                                                                     for(pd in tour_show[y].period[order_period[gp]]){
@@ -1526,13 +1606,14 @@
                 text +=                "</div>";
                 text +=            "</div>";
                 
+                
                 // grid view 
                     if(Object.keys(tour_show[y].period).length > 0){
                         text_grid +=            "<tr>";
                         text_grid +=                        "<td>";
                         text_grid +=                            "<div class='row'>";
                         text_grid +=                                "<div class='col-5 col-lg-4'>";
-                        text_grid +=                                   " <a href='/tour/"+tour_show[y].tour.slug+"' target='_blank'><img src='/"+tour_show[y].tour.image+"' class='img-fluid' alt=''></a>";
+                        text_grid +=                                   " <a href='/tour/"+tour_show[y].tour.slug+"' target='_blank'><img <img src='https://nexttripholidays.com/"+tour_show[y].tour.image+"' class='img-fluid' alt=''></a>";
                         text_grid +=                                "</div>";
                         text_grid +=                                "<div class='col-7 col-lg-8 titlenametab'>";
                         text_grid +=                                    "<h3><a href='/tour/"+tour_show[y].tour.slug+"' target='_blank'>"+tour_show[y].tour.name+"</a> </h3>";
@@ -1563,7 +1644,7 @@
                         text_grid +=                        "<td>";
                                                             if(tour_show[y].airline){
                                                                 "<a href='javascript:void(0);' onclick='document.getElementById(`airline"+tour_show[y].tour.airline_id+"`).click()'>";
-                        text_grid +=                               "<img src='/"+tour_show[y].airline.image+"' class='img-fluid' alt=''>";
+                        text_grid +=                               "<img <img src='https://nexttripholidays.com/"+tour_show[y].airline.image+"' class='img-fluid' alt=''>";
                         text_grid +=                            "</a>";
                                                             }
                         text_grid +=                        "</td>";
@@ -1591,7 +1672,7 @@
                         text_grid +=                        "<td>";
                                                             if(tour_show[y].tour_type){
                                                                 "<a href='javascript:void(0);' onclick='OrderByType("+tour_show[y].tour_type.id+")' target='_blank' class='tagicbest'>";
-                        text_grid +=                                "<img src='/"+tour_show[y].tour_type.image+"' class='img-fluid' alt=''>";
+                        text_grid +=                                "<img <img src='https://nexttripholidays.com/"+tour_show[y].tour_type.image+"' class='img-fluid' alt=''>";
                         text_grid +=                            "</a>";
                                                             }
                         text_grid +=                        "</td>";
@@ -1599,8 +1680,10 @@
                         text_grid +=                "</tr>";
                     }
                 // grid view   
+                text += `</div></div>`; // ปิด card
             }
-
+            
+  text +=                    "<hr>";
             if(x != undefined){
                 document.getElementById('show_tour').innerHTML = text;
                 document.getElementById('show_grid').innerHTML = text_grid;
@@ -1612,6 +1695,7 @@
             // document.getElementById('show_tour').innerHTML = text;
             // document.getElementById('show_grid').innerHTML = text_grid;
         }
+        
         // ฟิลเตอร์ที่เลือก
         async function SelectFilter(){
         var text = '';

@@ -7,17 +7,21 @@ use App\Http\Controllers\Frontend as Frontend;
 
 
 Route::get('/', function () {
-    $host = request()->getHost();
-
-    // เช็คเฉพาะโดเมน nexttrip.asia หรือ www.nexttrip.asia
-    if (in_array($host, ['nexttrip.asia', 'www.nexttrip.asia'])) {
-        // ✅ รีไดเรกต์ไปหน้า /webpanel แบบ permanent
-        return redirect()->to('https://nexttrip.asia/webpanel', 301);
-    }
-
-    // ถ้าไม่ใช่โดเมนนี้ ให้ทำงานปกติ
-    return view('welcome'); // หรือจะโยนไป controller หลักของคุณก็ได้
+    return redirect('/webpanel/tour');
 });
+
+// Route::get('/', function () {
+//     $host = request()->getHost();
+
+//     // เช็คเฉพาะโดเมน nexttrip.asia หรือ www.nexttrip.asia
+//     if (in_array($host, ['nexttrip.asia', 'www.nexttrip.asia'])) {
+//         // ✅ รีไดเรกต์ไปหน้า /webpanel แบบ permanent
+//         return redirect()->to('https://nexttrip.asia/webpanel', 301);
+//     }
+
+//     // ถ้าไม่ใช่โดเมนนี้ ให้ทำงานปกติ
+//     return view('welcome'); // หรือจะโยนไป controller หลักของคุณก็ได้
+// });
 
 /*
 |--------------------------------------------------------------------------

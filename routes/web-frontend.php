@@ -15,7 +15,7 @@ Route::group(['middleware' => ['Member']], function () {
 Route::post('/login', [Frontend\HomeController::class, 'LogIn']);
 Route::get('/logout', [Frontend\HomeController::class, 'LogOut']);
 
-Route::get('/', [Frontend\HomeController::class, 'index']);
+// Route::get('/', [Frontend\HomeController::class, 'index']);
 Route::get('/about', [Frontend\HomeController::class, 'about']);
 Route::get('/aroundworld/{id}/{tyid}/{tid}', [Frontend\HomeController::class, 'aroundworld']);
 Route::get('/around-detail/{id}', [Frontend\HomeController::class, 'around_detail']);

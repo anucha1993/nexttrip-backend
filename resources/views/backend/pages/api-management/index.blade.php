@@ -65,8 +65,8 @@
                                 <!-- Last Sync & Schedule Info -->
                                 <div class="mt-3 pt-3 border-t border-slate-200 space-y-2">
                                     <!-- Last Sync Info -->
-                                    @if($provider->syncLogs->count() > 0)
-                                        @php $lastSync = $provider->syncLogs->first(); @endphp
+                                    @if($provider->lastSync)
+                                        @php $lastSync = $provider->lastSync; @endphp
                                         <div class="text-xs">
                                             <div class="flex items-center justify-between mb-1">
                                                 <span class="text-slate-600 font-medium">Last Sync:</span>
@@ -197,8 +197,8 @@
                                     </a>
                                     <a href="{{ route('api-management.duplicates', $provider->id) }}" class="btn btn-outline-danger btn-sm mr-1" title="View Duplicates">
                                         <i data-lucide="copy" class="w-4 h-4"></i>
-                                        @if($provider->duplicates()->where('status', 'pending')->count() > 0)
-                                            <span class="ml-1 bg-red-500 text-white rounded-full px-1 text-xs">{{ $provider->duplicates()->where('status', 'pending')->count() }}</span>
+                                        @if($provider->duplicates_count > 0)
+                                            <span class="ml-1 bg-red-500 text-white rounded-full px-1 text-xs">{{ $provider->duplicates_count }}</span>
                                         @endif
                                     </a>
                                     <div class="dropdown ml-auto">
@@ -329,7 +329,7 @@
         function syncManual(providerId) {
             Swal.fire({
                 title: 'Confirm Manual Sync',
-                text: 'System will create a temporary schedule to run in 1 minutes',
+                text: 'This will start syncing data immediately',
                 icon: 'question',
                 showCancelButton: true,
                 confirmButtonColor: '#3085d6',
@@ -340,7 +340,7 @@
                     const modal = tailwind.Modal.getOrCreateInstance(document.querySelector("#loading-modal"));
                     modal.show();
                     
-                    // สร้าง temporary schedule
+                    // สร้าง temporary schedule แทนการ sync ตรงๆ
                     fetch(`/webpanel/api-management/${providerId}/sync-manual-temp`, {
                         method: 'POST',
                         headers: {
@@ -354,13 +354,14 @@
                         if (data.success) {
                             Swal.fire({
                                 icon: 'success',
-                                title: 'Schedule Created!',
+                                title: 'Manual Sync Scheduled!',
                                 html: `
                                     <div class="text-left">
-                                        <p class="mb-2">✅ Temporary schedule created successfully</p>
+                                        <p class="mb-2">✅ Manual sync has been scheduled successfully</p>
                                         <p class="text-sm text-gray-600">⏰ Will run at: <strong>${data.next_run_at}</strong></p>
-                                        <p class="text-sm text-gray-600 mt-2">📊 Sync limit: <strong>${data.sync_limit ? data.sync_limit + ' records' : 'All records (no limit)'}</strong></p>
-                                        <p class="text-sm text-blue-600 mt-3">The schedule will auto-delete after sync completes</p>
+                                        <p class="text-sm text-gray-600">📋 Schedule ID: <strong>${data.schedule_id}</strong></p>
+                                        <p class="text-sm text-blue-600">🔄 The sync will run automatically by the scheduler</p>
+                                        <p class="text-xs text-gray-500 mt-2">💡 You can refresh this page in a few minutes to see the results</p>
                                     </div>
                                 `,
                                 confirmButtonText: 'OK'
@@ -370,7 +371,7 @@
                         } else {
                             Swal.fire({
                                 icon: 'error',
-                                title: 'Failed!',
+                                title: 'Failed to Schedule Sync!',
                                 text: data.message,
                                 confirmButtonText: 'OK'
                             });
@@ -381,7 +382,7 @@
                         Swal.fire({
                             icon: 'error',
                             title: 'Error!',
-                            text: 'An error occurred while creating schedule.',
+                            text: 'An error occurred while scheduling the sync.',
                             confirmButtonText: 'OK'
                         });
                     });
