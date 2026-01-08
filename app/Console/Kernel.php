@@ -37,17 +37,23 @@ class Kernel extends ConsoleKernel
         
         \Log::info("Checking scheduled API syncs", ['current_time' => $now->format('Y-m-d H:i:s')]);
         
-        // Get all active schedules
+        // Get all active schedules that are not currently running
         $schedules = \DB::table('tb_api_schedules')
             ->where('is_active', 1)
+            ->where(function($query) {
+                $query->where('last_status', '!=', 'running')
+                      ->orWhereNull('last_status')
+                      ->orWhere('last_run_at', '<', \Carbon\Carbon::now()->subMinutes(30)); // ถ้า running นานเกิน 30 นาที ให้ถือว่าติด
+            })
             ->get();
         
-        \Log::info("Found {$schedules->count()} active schedules");
+        \Log::info("Found {$schedules->count()} active schedules (excluding running schedules)");
         
         foreach ($schedules as $schedule) {
             \Log::info("Checking schedule", [
                 'schedule_id' => $schedule->id,
                 'name' => $schedule->name,
+                'last_status' => $schedule->last_status,
                 'next_run_at' => $schedule->next_run_at
             ]);
             

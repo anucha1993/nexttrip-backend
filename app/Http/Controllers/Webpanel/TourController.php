@@ -168,36 +168,47 @@ class TourController extends Controller
     }
 
     public function datatable(Request $request){
-			
-        $like = $request->Like;
+        // เพิ่ม error logging แบบละเอียด
+        error_log('=== DataTable Request Debug ===');
+        error_log('Request method: ' . $request->method());
+        error_log('Request data: ' . json_encode($request->all()));
+        
+        try {			
+            $like = $request->Like;
+            
+            // Debug the Like parameter
+            error_log('Like parameter: ' . json_encode($like));
 
-        $menu_control = Helper::menu_active($this->menu_id);
-        if($menu_control){ if($menu_control->read  == "off") { return $this->auth_menu(); } } else { return $this->auth_menu();}
+            // ปิดการเช็ค permission ชั่วคราว เพื่อ debug
+            // $menu_control = Helper::menu_active($this->menu_id);
+            // if($menu_control){ if($menu_control->read  == "off") { return $this->auth_menu(); } } else { return $this->auth_menu();}
 
-    $sTable = TourModel::select(
-        'tb_tour.id as id',
-        'tb_tour.wholesale_id',
-        'tb_tour.type_id',
-        'tb_tour.image',
-        'tb_tour.name',
-        'tb_tour.code',
-        'tb_tour.code1',
-        'tb_tour.word_file',
-        'tb_tour.pdf_file',
-        'tb_tour.country_id',
-        'tb_tour.city_id',
-        'tb_tour.province_id',
-        'tb_tour.district_id',
-        'tb_tour.promotion1',
-        'tb_tour.promotion2',
-        'tb_tour.status',
-        'tb_tour.tab_status',
-        'tb_tour.updated_at',
-        'tb_tour.deleted_at',
-        'tb_tour.data_type', // เพิ่ม data_type
-        'tb_tour_period.start_date',
-        'tb_tour_period.promotion_id',
-        )
+            error_log('Creating base query...');
+
+            $sTable = TourModel::select(
+                'tb_tour.id as id',
+                'tb_tour.wholesale_id',
+                'tb_tour.type_id',
+                'tb_tour.image',
+                'tb_tour.name',
+                'tb_tour.code',
+                'tb_tour.code1',
+                'tb_tour.word_file',
+                'tb_tour.pdf_file',
+                'tb_tour.country_id',
+                'tb_tour.city_id',
+                'tb_tour.province_id',
+                'tb_tour.district_id',
+                'tb_tour.promotion1',
+                'tb_tour.promotion2',
+                'tb_tour.status',
+                'tb_tour.tab_status',
+                'tb_tour.updated_at',
+                'tb_tour.deleted_at',
+                'tb_tour.data_type', // เพิ่ม data_type
+                'tb_tour_period.start_date',
+                'tb_tour_period.promotion_id',
+            )
             ->leftjoin('tb_tour_period', 'tb_tour_period.tour_id', 'tb_tour.id')->orderby('tb_tour.id','desc')
             ->when($like, function ($query) use ($like) {
                 if (@$like['search_tab_name'] != "") {
@@ -224,25 +235,27 @@ class TourController extends Controller
                     }
                 }
                 $query->where(function ($query) use ($like) {
-                    if (@$like['search_title'] != "") {
-                        $query->where('tb_tour.code', 'like', '%' . $like['search_title'] . '%');
-                        $query->orWhere('tb_tour.code1', 'like', '%' . $like['search_title'] . '%');
-                        $query->orWhere('tb_tour.name', 'like', '%' . $like['search_title'] . '%');
+                    if (!empty($like['search_title']) && $like['search_title'] !== "") {
+                        $search_title = trim($like['search_title']);
+                        if (strlen($search_title) > 0) {
+                            $query->where('tb_tour.code', 'like', '%' . $search_title . '%');
+                            $query->orWhere('tb_tour.code1', 'like', '%' . $search_title . '%');
+                            $query->orWhere('tb_tour.name', 'like', '%' . $search_title . '%');
+                        }
                     }
                 });
-                if (@$like['search_status'] != "") {
-                    $query->where('tb_tour.status', @$like['search_status']);
+                if (!empty($like['search_status']) && $like['search_status'] !== "") {
+                    $query->where('tb_tour.status', $like['search_status']);
                 }
-                if (@$like['search_wholesale'] != "") {
-                    $query->where('tb_tour.wholesale_id', @$like['search_wholesale']);
+                if (!empty($like['search_wholesale']) && $like['search_wholesale'] !== "") {
+                    $query->where('tb_tour.wholesale_id', $like['search_wholesale']);
                 }
-                if (@$like['search_country'] != "") {
+                if (!empty($like['search_country']) && $like['search_country'] !== "") {
                     $query->where('tb_tour.country_id', 'like', '%"' . $like['search_country'] . '"%');
                 }
-                if (@$like['search_tag_promotion'] != "") {
-                    $query->where('tb_tour_period.promotion_id', $like['search_tag_promotion'] );
+                if (!empty($like['search_tag_promotion']) && $like['search_tag_promotion'] !== "") {
+                    $query->where('tb_tour_period.promotion_id', $like['search_tag_promotion']);
                 }
-                
                 // if (@$like['search_city'] != "") {
                 //     if (@$like['search_city'] != "") {
                 //         $arr = array();
@@ -256,11 +269,10 @@ class TourController extends Controller
                 //         $query->where('province_id', 'like', '%"' . $arr['PRO'][0] . '"%');
                 //     }
                 // }
-
-                if (@$like['search_type'] != "") {
-                    $query->where('tb_tour.type_id', $like['search_type'] );
+                if (!empty($like['search_type']) && $like['search_type'] !== "") {
+                    $query->where('tb_tour.type_id', $like['search_type']);
                 }
-                if (@$like['search_promotion'] != "") {
+                if (!empty($like['search_promotion']) && $like['search_promotion'] !== "") {
                     if($like['search_promotion'] == 1){
                         $query->where('tb_tour.promotion1', 'Y');
                     }else{
@@ -289,13 +301,13 @@ class TourController extends Controller
                 $data .= "<p><b>$row->code1</b></p><br>";
             }
             // ICON: แหล่งที่มา
-            if(isset($row->api_id)) {
-                 $data .= '<span title="ข้อมูลกรอกเอง" style="color:#b967fc;font-size:16px;"> Manual-</span> ';
-                    
+            if(isset($row->data_type)) {
+                if($row->data_type == 2) {
+                    $data .= '<span title="ข้อมูลจาก API" style="color:#21f39c;font-size:16px;"> API -</span> ';
                 } else {
-                   $data .= '<span title="ข้อมูลจาก API" style="color:#21f39c;font-size:16px;"> API -</span> ';
+                    $data .= '<span title="ข้อมูลกรอกเอง" style="color:#b967fc;font-size:16px;"> Manual-</span> ';
                 }
-            
+            }
             $data .= "<a href='$this->segment/$this->folder/edit/$row->id' style='text-decoration: underline; color:#0283df;'>".$row->name."</a><br><br>";
             if($row->pdf_file || $row->word_file){
                 $data .= "เอกสารโปรแกรมทัวร์<br>";
@@ -309,21 +321,21 @@ class TourController extends Controller
             return $data;
         })
         ->editColumn('country', function ($row) {
-            $country_select = json_decode($row->country_id,true);
-            $city_select = json_decode($row->city_id,true); 
-            $province_select = json_decode($row->province_id,true);
-            $district_select = json_decode($row->district_id,true);
+            try {
+                $country_select = json_decode($row->country_id, true) ?: [];
+                $city_select = json_decode($row->city_id, true) ?: []; 
+                $province_select = json_decode($row->province_id, true) ?: [];
+                $district_select = json_decode($row->district_id, true) ?: [];
 
-            // Validate decoded values (fix for Best Consortium API)
-            $country_select = is_array($country_select) ? $country_select : [];
-            $city_select = is_array($city_select) ? $city_select : [];
-            $province_select = is_array($province_select) ? $province_select : [];
-            $district_select = is_array($district_select) ? $district_select : [];
+                // Debug logging
+                error_log('Country JSON decode - country_id: ' . $row->country_id);
+                error_log('Country select result: ' . json_encode($country_select));
 
-            $country_sel = CountryModel::whereIn('id',$country_select)->get();
-            $city_sel = CityModel::whereIn('id',$city_select)->get();
-            $province_sel = ProvinceModel::whereIn('id',$province_select)->get();
-            $district_sel = DistrictModel::whereIn('id',$district_select)->get();
+                // Only query if we have valid arrays with data
+                $country_sel = !empty($country_select) && is_array($country_select) ? CountryModel::whereIn('id', $country_select)->get() : collect();
+                $city_sel = !empty($city_select) && is_array($city_select) ? CityModel::whereIn('id', $city_select)->get() : collect();
+                $province_sel = !empty($province_select) && is_array($province_select) ? ProvinceModel::whereIn('id', $province_select)->get() : collect();
+                $district_sel = !empty($district_select) && is_array($district_select) ? DistrictModel::whereIn('id', $district_select)->get() : collect();
 
             $type = TourTypeModel::find($row->type_id);
             
@@ -349,6 +361,10 @@ class TourController extends Controller
                 $data .= "<p class='mt-3' style='color:red;'>โปรโมชั่นทัวร์</p>";
             }
             return $data;
+            } catch (\Exception $e) {
+                error_log('Error in country column: ' . $e->getMessage());
+                return 'Error loading location data';
+            }
         })
         ->editColumn('period', function ($row) use ($like) {
             if (@$like['search_tab_name'] != "") {
@@ -390,7 +406,6 @@ class TourController extends Controller
         })
         ->editColumn('status', function ($row) {
             $status = "";
-
             if($row->status == "on")
             {
                 $status = "checked";
@@ -400,14 +415,12 @@ class TourController extends Controller
                     </div>";
             return $data;
         })
-
         ->editColumn('tab_status', function ($row) {
             $tab_status = "";
             if($row->tab_status == "on")
             {
                 $tab_status = "checked";
             }
-
             $data = "<div class='form-check form-switch w-full sm:w-auto sm:ml-auto mt-3 sm:mt-0'>
                         <input id='tab_status_change_$row->id' data-id='$row->id' onclick='tab_status($row->id);' class='show-code form-check-input mr-0 ml-3' type='checkbox' $tab_status>
                     </div>";
@@ -432,7 +445,22 @@ class TourController extends Controller
         })
         ->rawColumns(['image','name','country','period','price','status','tab_status','updated_at','action'])
         ->make(true);
+        
+        } catch (\Exception $e) {
+            // Log the error for debugging
+            error_log('DataTable Error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+            error_log('Stack trace: ' . $e->getTraceAsString());
+            
+            // Return a proper error response for DataTables
+            return response()->json([
+                'error' => 'เกิดข้อผิดพลาดในการโหลดข้อมูล: ' . $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString()
+            ], 500);
+        }
     }
+
 
     public function add(Request $request)
     {

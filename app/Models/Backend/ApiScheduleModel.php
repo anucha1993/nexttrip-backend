@@ -23,6 +23,7 @@ class ApiScheduleModel extends Model
         'cron_expression',
         'sync_limit',
         'is_active',
+        'is_temp_manual',
         'last_run_at',
         'next_run_at',
         'last_status',
@@ -35,7 +36,8 @@ class ApiScheduleModel extends Model
         'options' => 'array',
         'last_run_at' => 'datetime',
         'next_run_at' => 'datetime',
-        'is_active' => 'boolean'
+        'is_active' => 'boolean',
+        'is_temp_manual' => 'boolean'
     ];
 
     // Relationships

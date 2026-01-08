@@ -493,7 +493,7 @@
                                         <td>
                                             <select name="field_mappings[{{ $tourMappingIndex }}][local_field]" class="form-select w-full" required>
                                                 <option value="">Select field</option>
-                                                @foreach(['api_id', 'code1', 'name', 'description', 'rating', 'num_day', 'image', 'pdf_file', 'country_name', 'airline_code', 'api_type', 'data_type', 'country_id', 'airline_id'] as $field)
+                                                @foreach(['api_id', 'code1', 'name', 'description', 'rating', 'num_day', 'image', 'pdf_file', 'country_name', 'airline_code', 'api_type', 'data_type', 'country_id', 'airline_id','wholesale_id'] as $field)
                                                 <option value="{{ $field }}" {{ $mapping->local_field == $field ? 'selected' : '' }}>{{ $field }}</option>
                                               
                                                 @endforeach
@@ -1607,17 +1607,25 @@ function updateStaticValueDisplay(index) {
         }
 
         // Handle schedule form submission
+        // NOTE: we always send the HTTP request as POST here so the browser will send
+        // multipart/form-data which PHP/Laravel can parse into Request->input().
+        // For edits we set the hidden input named "_method" to "PUT" (see editSchedule())
+        // so Laravel will treat the request as an update. Sending a native PUT with
+        // multipart/form-data may result in PHP not populating $_POST and cause
+        // validation errors ("ข้อมูลไม่ถูกต้อง").
         document.getElementById('scheduleForm').addEventListener('submit', function(e) {
             e.preventDefault();
-            
+
             const formData = new FormData(this);
             const url = this.action;
-            const method = document.getElementById('scheduleMethod').value;
-            
-            // Laravel requires POST for all requests when using FormData
-            // _method field in FormData will handle PUT/DELETE
+
+            // Always use POST for the actual HTTP method so multipart form data is parsed.
+            // The hidden input with name="_method" (scheduleMethod) indicates the intended
+            // semantic method (PUT for updates) and will be included in formData.
+            const httpMethod = 'POST';
+
             fetch(url, {
-                method: 'POST', // Always use POST with FormData
+                method: httpMethod,
                 body: formData,
                 headers: {
                     'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
